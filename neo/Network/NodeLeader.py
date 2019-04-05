@@ -690,7 +690,7 @@ class NodeLeader:
         elif type(err.value) == error.ConnectError:
             ce = err.value
             if len(ce.args) > 0:
-                logger.debug(f"Failed connecting to {address} {ce.args[0].value}")
+                logger.debug(f"Failed connecting to {address} {ce.args[0]}")
             else:
                 logger.debug(f"Failed connecting to {address}")
         else:
