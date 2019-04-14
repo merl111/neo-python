@@ -99,5 +99,34 @@ def getBatch(self):
         self._batch.write()
 
 
+def rollbackDatabase(self, to_block_id):
+
+    import binascii
+    from neo.Core.Block import Block
+    from neo.Core.Header import Header
+
+    current_block = None
+    current_header = None
+    for key, value in self._db.iterator(prefix=DBPrefix.DATA_Block,
+                                        include_value=True, reverse=True):
+        try:
+            outhex = binascii.unhexlify(bytearray(value)[8:])
+            block = Block.FromTrimmedData(outhex)
+            if block.Index == to_block_id:
+                current_block = block
+                current_header = Header.FromTrimmedData(outhex, 0)
+                logger.info('found current block %d', block.Index)
+
+            if block.Index > to_block_id:
+                logger.info('removing block %d', block.Index)
+                self.delete(key)
+        except Exception as e:
+            logger.info("Could not get block %s " % e)
+
+    self.write(DBPrefix.SYS_CurrentBlock, current_block.Hash.ToBytes() + current_block.IndexBytes())
+    self.write(DBPrefix.SYS_CurrentHeader, current_header.Hash.ToBytes() + current_header.Index.to_bytes(4, 'little'))
+    self.delete(DBPrefix.IX_HeaderHashList)
+
+
 def closeDB(self):
     self._db.close()

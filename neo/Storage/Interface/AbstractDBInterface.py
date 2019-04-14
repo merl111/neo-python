@@ -42,3 +42,7 @@ class AbstractDBInterface(ABC):
     @abstractmethod
     def closeDB(self):
         raise NotImplementedError
+
+    @abstractmethod
+    def rollbackDatabase(self, to_block_id):
+        raise NotImplementedError

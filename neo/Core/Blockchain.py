@@ -148,21 +148,7 @@ class Blockchain:
 
                 if self._stored_header_count == 0:
                     logger.info("Current stored headers empty, re-creating from stored blocks...")
-                    headers = []
-                    logger.info('Recreate headers')
-                    with self._db.openIter(DBProperties(DBProperties(DBPrefix.DATA_Block))) as iterator:
-                        for key, value in iterator:
-                            dbhash = bytearray(value)[8:]
-                            headers.append(Header.FromTrimmedData(binascii.unhexlify(dbhash), 0))
-
-                    headers.sort(key=lambda h: h.Index)
-                    for h in headers:
-                        if h.Index > 0:
-                            self._header_index.append(h.Hash.ToBytes())
-
-                    if len(headers):
-                        self.OnAddHeader(headers[-1])
-
+                    self._recreateHeaders()
                 elif current_header_height > self._stored_header_count:
                     try:
                         hash = current_header_hash
@@ -1138,6 +1124,28 @@ class Blockchain:
     def Dispose(self):
         self._db.closeDB()
         self._disposed = True
+
+    def RollbackChain(self, block_id):
+        logger.info('rollback started %d', block_id)
+        self._db.rollbackDatabase(block_id)
+        self._recreateHeaders()
+        logger.info('rollback done, now at height %d', self.Height)
+
+    def _recreateHeaders(self):
+        headers = []
+        logger.info('Recreate headers')
+        with self._db.openIter(DBProperties(DBPrefix.DATA_Block)) as iterator:
+            for key, value in iterator:
+                dbhash = bytearray(value)[8:]
+                headers.append(Header.FromTrimmedData(binascii.unhexlify(dbhash), 0))
+
+        headers.sort(key=lambda h: h.Index)
+        for h in headers:
+            if h.Index > 0:
+                self._header_index.append(h.Hash.ToBytes())
+
+        if len(headers):
+            self.OnAddHeader(headers[-1])
 
     @staticmethod
     def RegisterBlockchain(blockchain):
