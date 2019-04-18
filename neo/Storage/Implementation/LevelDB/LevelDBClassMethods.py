@@ -1,5 +1,7 @@
 import plyvel
 import threading
+import struct
+import time
 
 from contextlib import contextmanager
 
@@ -54,7 +56,7 @@ def writeBatch(self, batch: dict):
 
 def get(self, key, default=None):
     _value = self._db.get(key, default)
-    return _value
+    return _value[:-4]
 
 
 def delete(self, key):
@@ -110,18 +112,23 @@ def rollbackDatabase(self, to_block_id):
     for key, value in self._db.iterator(prefix=DBPrefix.DATA_Block,
                                         include_value=True, reverse=True):
         try:
+
             outhex = binascii.unhexlify(bytearray(value)[8:])
-            block = Block.FromTrimmedData(outhex)
-            if block.Index == to_block_id:
+            index = struct.unpack('<I', outhex[72:76])[0]
+
+            logger.info('check index %d', index)
+            if index == to_block_id:
+                block = Block.FromTrimmedData(outhex)
                 current_block = block
                 current_header = Header.FromTrimmedData(outhex, 0)
                 logger.info('found current block %d', block.Index)
-
-            if block.Index > to_block_id:
+            elif index > to_block_id:
+                block = Block.FromTrimmedData(outhex)
                 logger.info('removing block %d', block.Index)
                 self.delete(key)
         except Exception as e:
-            logger.info("Could not get block %s " % e)
+            pass
+            # logger.info("Could not get block %s " % e)
 
     self.write(DBPrefix.SYS_CurrentBlock, current_block.Hash.ToBytes() + current_block.IndexBytes())
     self.write(DBPrefix.SYS_CurrentHeader, current_header.Hash.ToBytes() + current_header.Index.to_bytes(4, 'little'))

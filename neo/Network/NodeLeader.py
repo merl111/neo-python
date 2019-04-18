@@ -503,19 +503,24 @@ class NodeLeader:
         Returns:
             bool: True if processed and verified. False otherwise.
         """
+        logger.info('Inventory received')
         if inventory.Hash.ToBytes() in self._MissedBlocks:
             self._MissedBlocks.remove(inventory.Hash.ToBytes())
 
         if inventory is MinerTransaction:
+            logger.info('Miner TX')
             return False
 
         if type(inventory) is Block:
             if BC.Default() is None:
+                logger.info('BC is NONE')
                 return False
 
             if BC.Default().ContainsBlock(inventory.Index):
+                logger.info('BC contains block')
                 return False
 
+            logger.info('about to add %d ', inventory.Index)
             if not BC.Default().AddBlock(inventory):
                 return False
 

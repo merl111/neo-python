@@ -264,6 +264,8 @@ def main():
     # Instantiate the blockchain and subscribe to notifications
     blockchain = Blockchain(getBlockchainDB())
     Blockchain.RegisterBlockchain(blockchain)
+    print('have blockchain:')
+    print(blockchain)
 
     start_block_persisting()
 

@@ -81,14 +81,18 @@ class DBInterface(object):
                 if key not in self.Collection.keys():
                     self.Collection[key] = None
 
-    def Commit(self, wb, destroy=True):
+    def Commit(self, wb, index, destroy=True):
+
+        bIndex = struct.pack('<I', index)
         for keyval in self.Changed:
             item = self.Collection[keyval]
             if item:
                 if not wb:
-                    self.DB.write(self.Prefix + keyval, self.Collection[keyval].ToByteArray())
+                    self.DB.write(self.Prefix + keyval, 
+                            self.Collection[keyval].ToByteArray() + bIndex)
                 else:
-                    wb.put(self.Prefix + keyval, self.Collection[keyval].ToByteArray())
+                    wb.put(self.Prefix + keyval, 
+                            self.Collection[keyval].ToByteArray() + bIndex)
         for keyval in self.Deleted:
             if not wb:
                 self.DB.delete(self.Prefix + keyval)

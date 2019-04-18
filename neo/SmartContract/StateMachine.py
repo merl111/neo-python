@@ -74,6 +74,9 @@ class StateMachine(StateReader):
         self.Register("AntShares.Storage.Put", self.Storage_Put)
         self.Register("AntShares.Storage.Delete", self.Storage_Delete)
 
+    def GetBC(self):
+        return self._chain
+
     def ExecutionCompleted(self, engine, success, error=None):
 
         # commit storages right away
@@ -85,11 +88,11 @@ class StateMachine(StateReader):
         super(StateMachine, self).ExecutionCompleted(engine, success, error)
 
     def Commit(self):
-        self._accounts.Commit(self._wb, False)
-        self._validators.Commit(self._wb, False)
-        self._assets.Commit(self._wb, False)
-        self._contracts.Commit(self._wb, False)
-        self._storages.Commit(self._wb, False)
+        self._accounts.Commit(self._wb, _chain.CurrentBlock.Index, False)
+        self._validators.Commit(self._wb,_chain.CurrentBlock.Index, False)
+        self._assets.Commit(self._wb,_chain.CurrentBlock.Index, False)
+        self._contracts.Commit(self._wb,_chain.CurrentBlock.Index, False)
+        self._storages.Commit(self._wb,_chain.CurrentBlock.Index, False)
 
     def ResetState(self):
         self._accounts.Reset()

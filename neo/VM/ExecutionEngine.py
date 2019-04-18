@@ -288,6 +288,7 @@ class ExecutionEngine:
 
                 if rvcount > 0:
                     if context_pop.EvaluationStack.Count < rvcount:
+                        context_pop.Dispose()
                         return self.VM_FAULT_and_report(VMFault.UNKNOWN1)
 
                     if istack.Count == 0:
@@ -303,6 +304,7 @@ class ExecutionEngine:
 
                 if istack.Count == 0:
                     self._VMState = VMState.HALT
+                context_pop.Dispose()
 
             elif opcode == APPCALL or opcode == TAILCALL:
                 if self._Table is None:

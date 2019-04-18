@@ -315,6 +315,8 @@ class Blockchain:
         return self.GetBlockByHeight(self.Height)
 
     def AddBlock(self, block):
+        time.sleep(0.5)
+        logger.info('adding block %d hash %s', block.Index, block.Hash)
         if not block.Hash.ToBytes() in self._block_cache:
             self._block_cache[block.Hash.ToBytes()] = block
 
@@ -940,6 +942,7 @@ class Blockchain:
         self._paused = False
 
     def Persist(self, block):
+        logger.info('START NOW %s', block.Hash)
 
         self._persisting_block = block
 
@@ -953,6 +956,7 @@ class Blockchain:
         amount_sysfee = self.GetSysFeeAmount(block.PrevHash) + block.TotalFees().value
         amount_sysfee_bytes = amount_sysfee.to_bytes(8, 'little')
 
+        logger.info('block hash %s', block.Hash)
         with self._db.getBatch() as wb:
             wb.put(DBPrefix.DATA_Block + block.Hash.ToBytes(), amount_sysfee_bytes + block.Trim())
 
@@ -1038,6 +1042,7 @@ class Blockchain:
 
                     contracts.GetAndChange(tx.Code.ScriptHash().ToBytes(), contract)
                 elif tx.Type == TransactionType.InvocationTransaction:
+                    logger.info('vm work %s', block.Index)
                     ApplicationEngine.Run(tx.Script, tx, False, tx.Gas, False, wb)
                 else:
 
@@ -1052,23 +1057,23 @@ class Blockchain:
                 if not account.IsFrozen and len(account.Votes) == 0 and account.AllBalancesZeroOrLess():
                     accounts.Remove(key)
 
-            accounts.Commit(wb)
+            accounts.Commit(wb, block.Index)
 
             # filte out unspent coins to delete then commit
             for key, unspent in unspentcoins.Current.items():
                 if unspent.IsAllSpent:
                     unspentcoins.Remove(key)
-            unspentcoins.Commit(wb)
+            unspentcoins.Commit(wb, block.Index)
 
             # filter out spent coins to delete then commit to db
             for key, spent in spentcoins.Current.items():
                 if len(spent.Items) == 0:
                     spentcoins.Remove(key)
 
-            spentcoins.Commit(wb)
-            validators.Commit(wb)
-            assets.Commit(wb)
-            contracts.Commit(wb)
+            spentcoins.Commit(wb, block.Index)
+            validators.Commit(wb, block.Index)
+            assets.Commit(wb, block.Index)
+            contracts.Commit(wb, block.Index)
 
             wb.put(DBPrefix.SYS_CurrentBlock, block.Hash.ToBytes() + block.IndexBytes())
             self._current_block_height = block.Index
@@ -1089,6 +1094,11 @@ class Blockchain:
                 hash = self._header_index[self._current_block_height + 1]
 
                 if hash not in self._block_cache:
+                    logger.info('not in cache %s', hash)
+                    logger.info('hash: 0x%s', self.CurrentHeaderHash.decode('utf-8'))
+                    logger.info('hash2: 0x%s', self._header_index[2478758].decode('utf-8'))
+                    logger.info('hash2: 0x%s', self._header_index[2478757].decode('utf-8'))
+                    logger.info('not in cache %s', hash)
                     self.BlockSearchTries += 1
                     break
 
@@ -1102,12 +1112,14 @@ class Blockchain:
                     if self._previous_blockid is None:
                         self._previous_blockid = block.Index
 
+                    logger.info('persist block %d', block.Index)
                     self.Persist(block)
 
                     self._previous_blockid = block.Index
                     del self._block_cache[hash]
                 except Exception as e:
-                    logger.info(f"Could not persist block {block.Index} reason: {e}")
+                    #logger.info(f"Could not persist block {block.Index} reason: {e}")
+                    logger.info("asdfdfsadsf")
                     raise e
 
                 try:
