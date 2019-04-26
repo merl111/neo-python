@@ -39,6 +39,9 @@ def getNotificationDB(path=None):
     if not path:
         path = DATABASE_PROPS[NOTIF_CONST]['path']
 
+    if DATABASE_PROPS[NOTIF_CONST]['backend'] == 'rocksdb':
+        raise Exception('Not yet possible, please use leveldb!')
+
     NotificationDB = _dbFactory(NOTIF_CONST, DATABASE_PROPS[NOTIF_CONST])
     _notif_db_instance = NotificationDB(path)
     return _notif_db_instance
@@ -52,10 +55,10 @@ def getDebugStorageDB():
 
 def _dbFactory(dbType, properties):
 
-    if properties['backend'] == 'leveldb':
-
-        # import what's needed
-        import neo.Storage.Implementation.LevelDB.LevelDBClassMethods as functions
+        if properties['backend'] == 'leveldb':
+            import neo.Storage.Implementation.LevelDB.LevelDBClassMethods as functions
+        elif properties['backend'] == 'rocksdb':
+            import neo.Storage.Implementation.RocksDB.RocksDBClassMethods as functions
 
         methods = [x for x in dir(functions) if not x.startswith('__')]
 
