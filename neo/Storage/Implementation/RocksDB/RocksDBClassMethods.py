@@ -23,6 +23,7 @@ _snap_init_method = '_snap_db_init'
 _path = None
 
 _db = None
+_snapshot = None
 
 _lock = threading.RLock()
 
@@ -38,9 +39,10 @@ def _prefix_db_init(self, _prefixdb):
     except Exception as e:
         raise Exception("rocksdb exception [ %s ]" % e)
 
-def _snap_db_init(self, snapshot):
+def _snap_db_init(self, db):
     try:
-        self._db = snapshot
+        self._db = db
+        self._snapshot = db.snapshot()
     except Exception as e:
         raise Exception("rocksdb exception [ %s ]" % e)
 
@@ -95,12 +97,9 @@ def cloneDatabase(self, clone_db):
 
 def createSnapshot(self):
     # check if snapshot db has to be closed
-    from .PrefixedDBFactory import internalDBFactory
-
+    from .InternalDBFactory import internalDBFactory
     SnapshotDB = internalDBFactory('Snapshot')
-    _iter = self._db.iteritems(self._db.snapshot())
-    _iter.seek_to_first
-    return SnapshotDB(dict(it))
+    return SnapshotDB(self._db)
 
 
 @contextmanager
@@ -119,7 +118,7 @@ def openIter(self, properties):
             _res = dict(
                     itertools.takewhile(
                         lambda item: item[0].startswith(prefix), _iter)
-                    )
+                    ).items()
         elif value:
             _res = list(
                     dict(
@@ -138,7 +137,7 @@ def openIter(self, properties):
     else:
         _iter.seek_to_first()
         if value and key:
-            _res = dict(_iter)
+            _res = dict(_iter).items()
         elif value:
             _res = list(dict(_iter).values())
         elif key:
@@ -161,7 +160,7 @@ def getBatch(self):
 def getPrefixedDB(self, prefix):
 
     # check if prefix db has to be closed
-    # from .PrefixedDBFactory import internalDBFactory
+    # from .InternalDBFactory import internalDBFactory
 
     # PrefixedDB = internalDBFactory('Prefixed')
     # return PrefixedDB(self._db.prefixed_db(prefix))

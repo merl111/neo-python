@@ -16,6 +16,7 @@ from neo.Settings import settings
 from neo.logging import log_manager
 from neo.Network.NodeLeader import NodeLeader
 from neo.Storage.Common.CachedScriptTable import CachedScriptTable
+from neo.Storage.Implementation.DBMigrate import migrateDB
 from neo.Core.State.CoinState import CoinState
 from neo.Core.State.AccountState import AccountState
 from neo.Core.State.UnspentCoinState import UnspentCoinState
@@ -197,6 +198,8 @@ class BlockchainFixtureTestCase(NeoTestCase):
     N_FIXTURE_FILENAME = os.path.join(settings.DATA_DIR_PATH, 'Chains/notif_fixtures_v8.tar.gz')
     N_NOTIFICATION_DB_NAME = os.path.join(settings.DATA_DIR_PATH, 'fixtures/test_notifications')
 
+    _migrated = False
+
     _blockchain = None
 
     wallets_folder = os.path.dirname(neo.__file__) + '/Utils/fixtures/'
@@ -257,6 +260,11 @@ class BlockchainFixtureTestCase(NeoTestCase):
 
         if not os.path.exists(cls.leveldb_testpath()):
             raise Exception("Error downloading fixtures at %s" % cls.leveldb_testpath())
+
+        # check if we have to migrate fixtures to RocksDB
+        if settings.get_db_backend() != 'leveldb':
+            migrateDB(fromdb='leveldb', todb=settings.get_db_backend(), 
+                      path=cls.leveldb_testpath(), remove_old=True)
 
         settings.setup_unittest_net()
 

@@ -82,7 +82,7 @@ def cloneDatabase(self, clone_db):
 
 def createSnapshot(self):
     # check if snapshot db has to be closed
-    from neo.Storage.Implementation.LevelDB.PrefixedDBFactory import internalDBFactory
+    from neo.Storage.Implementation.LevelDB.InternalDBFactory import internalDBFactory
 
     SnapshotDB = internalDBFactory('Snapshot')
     return SnapshotDB(self._db.snapshot())
@@ -110,7 +110,7 @@ def getBatch(self):
 def getPrefixedDB(self, prefix):
 
     # check if prefix db has to be closed
-    from neo.Storage.Implementation.LevelDB.PrefixedDBFactory import internalDBFactory
+    from neo.Storage.Implementation.LevelDB.InternalDBFactory import internalDBFactory
 
     PrefixedDB = internalDBFactory('Prefixed')
     return PrefixedDB(self._db.prefixed_db(prefix))

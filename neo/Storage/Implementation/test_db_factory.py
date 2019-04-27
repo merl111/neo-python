@@ -1,5 +1,6 @@
 from neo.Storage.Implementation.DBFactory import getBlockchainDB
 from neo.Settings import settings
+from collections import abc
 from unittest import TestCase, skip
 import shutil
 import os
@@ -77,11 +78,11 @@ class LevelDBTest(TestCase):
 
         with self._db.openIter(DBProperties(prefix=b'00002', include_value=True, include_key=True)) as iterator:
             self.assertEqual(len(iterator), 4)
-            self.assertIsInstance(iterator, dict)
+            self.assertIsInstance(iterator, abc.ItemsView)
 
         with self._db.openIter(DBProperties(prefix=None, include_value=True, include_key=True)) as iterator:
             self.assertEqual(len(iterator), 7)
-            self.assertIsInstance(iterator, dict)
+            self.assertIsInstance(iterator, abc.ItemsView)
 
         with self._db.openIter(DBProperties(prefix=None, include_value=False, include_key=True)) as iterator:
             self.assertEqual(len(iterator), 7)

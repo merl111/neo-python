@@ -156,6 +156,11 @@ class SettingsHolder:
                 }
 
     # Helpers
+    def get_db_backend(self):
+        """ returns the configured backend"""
+        props = self.database_properties()
+        return props['blockchain']['backend']
+
     @property
     def is_mainnet(self):
         """ Returns True if settings point to MainNet """

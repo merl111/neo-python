@@ -13,7 +13,10 @@ def internalDBFactory(classPrefix):
         functions, methods[i]) for i in range(0, len(methods))}
 
     # add __init__ method
-    attributes['__init__'] = attributes.pop(functions._prefix_init_method)
+    if classPrefix == 'Snapshot':
+        attributes['__init__'] = attributes.pop(functions._snap_init_method)
+    elif classPrefix == 'Prefixed':
+        attributes['__init__'] = attributes.pop(functions._prefix_init_method)
 
     return type(
         classPrefix.title() + 'DBImpl',

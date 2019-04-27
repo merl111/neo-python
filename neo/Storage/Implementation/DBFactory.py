@@ -24,12 +24,15 @@ _notif_db_instance = None
 _debug_db_instance = None
 
 
-def getBlockchainDB(path=None):
+def getBlockchainDB(path=None, dbType=None):
 
     if not path:
         path = DATABASE_PROPS[BC_CONST]['path']
 
-    BlockchainDB = _dbFactory(BC_CONST, DATABASE_PROPS[BC_CONST])
+    if not dbType:
+        dbType = DATABASE_PROPS[BC_CONST]['backend']
+
+    BlockchainDB = _dbFactory(BC_CONST, dbType)
     _blockchain_db_instance = BlockchainDB(path)
     return _blockchain_db_instance
 
@@ -42,36 +45,39 @@ def getNotificationDB(path=None):
     if DATABASE_PROPS[NOTIF_CONST]['backend'] == 'rocksdb':
         raise Exception('Not yet possible, please use leveldb!')
 
-    NotificationDB = _dbFactory(NOTIF_CONST, DATABASE_PROPS[NOTIF_CONST])
+    NotificationDB = _dbFactory(NOTIF_CONST, DATABASE_PROPS[NOTIF_CONST]['backend'])
     _notif_db_instance = NotificationDB(path)
     return _notif_db_instance
 
 
 def getDebugStorageDB():
-    DebugStorageDB = _dbFactory(DEBUG_CONST, DATABASE_PROPS[DEBUG_CONST])
+    DebugStorageDB = _dbFactory(DEBUG_CONST, DATABASE_PROPS[DEBUG_CONST]['backend'])
     _debug_db_instance = DebugStorageDB(DATABASE_PROPS[DEBUG_CONST]['path'])
     return _debug_db_instance
 
 
-def _dbFactory(dbType, properties):
+def _dbFactory(dbType, backend):
 
-        if properties['backend'] == 'leveldb':
-            import neo.Storage.Implementation.LevelDB.LevelDBClassMethods as functions
-        elif properties['backend'] == 'rocksdb':
-            import neo.Storage.Implementation.RocksDB.RocksDBClassMethods as functions
+    functions = None
+    if backend == 'leveldb':
+        import neo.Storage.Implementation.LevelDB.LevelDBClassMethods as functions
+    elif backend == 'rocksdb':
+        import neo.Storage.Implementation.RocksDB.RocksDBClassMethods as functions
+    else:
+        raise Exception('Unsupported backend [%s] configured!', backend)
 
-        methods = [x for x in dir(functions) if not x.startswith('__')]
+    methods = [x for x in dir(functions) if not x.startswith('__')]
 
-        # build attributes dict
-        attributes = {methods[i]: getattr(
-            functions, methods[i]) for i in range(0, len(methods))}
+    # build attributes dict
+    attributes = {methods[i]: getattr(
+        functions, methods[i]) for i in range(0, len(methods))}
 
-        # add __init__ method
-        attributes['__init__'] = attributes.pop(functions._init_method)
+    # add __init__ method
+    attributes['__init__'] = attributes.pop(functions._init_method)
 
-        # print(attributes)
+    # print(attributes)
 
-        return type(
-            properties['backend'].title() + 'DBImpl' + dbType.title(),
-            (AbstractDBInterface,),
-            attributes)
+    return type(
+        backend.title() + 'DBImpl' + dbType.title(),
+        (AbstractDBInterface,),
+        attributes)
