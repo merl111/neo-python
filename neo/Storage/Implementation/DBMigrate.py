@@ -33,7 +33,9 @@ def migrateDB(fromdb, todb, path, remove_old=False):
             mig_db_to.write(key, value)
 
     mig_db_from.closeDB()
-    shutil.rmtree(temp_path)
+
+    if remove_old:
+        shutil.rmtree(temp_path)
 
     mig_db_to.closeDB()
     open(path+'/MIGRATED', 'a').close()
