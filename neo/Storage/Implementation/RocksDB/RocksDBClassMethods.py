@@ -39,6 +39,7 @@ def _prefix_db_init(self, _prefixdb):
     except Exception as e:
         raise Exception("rocksdb exception [ %s ]" % e)
 
+
 def _snap_db_init(self, db):
     try:
         self._db = db
@@ -53,6 +54,17 @@ def _db_init(self, path):
         opts = rocksdb.Options()
         opts.create_if_missing = True
         opts.prefix_extractor = StaticPrefix()
+        opts.max_open_files = 300000
+        opts.write_buffer_size = 67108864
+        opts.max_write_buffer_number = 5
+        opts.min_write_buffer_number_to_merge = 2
+        opts.target_file_size_base = 67108864
+
+        opts.table_factory = rocksdb.BlockBasedTableFactory(
+            filter_policy=rocksdb.BloomFilterPolicy(10),
+            block_cache=rocksdb.LRUCache(2 * (1024 ** 3)),
+            block_cache_compressed=rocksdb.LRUCache(500 * (1024 ** 2)))
+
         self._db = rocksdb.DB(path, opts)
         logger.info("Created DB at %s " % self._path)
     except Exception as e:
@@ -116,23 +128,23 @@ def openIter(self, properties):
         _iter.seek(prefix)
         if value and key:
             _res = dict(
-                    itertools.takewhile(
-                        lambda item: item[0].startswith(prefix), _iter)
-                    ).items()
+                itertools.takewhile(
+                    lambda item: item[0].startswith(prefix), _iter)
+            ).items()
         elif value:
             _res = list(
-                    dict(
-                        itertools.takewhile(
-                            lambda item: item[0].startswith(prefix), _iter)
-                        ).values()
-                    )
+                dict(
+                    itertools.takewhile(
+                        lambda item: item[0].startswith(prefix), _iter)
+                ).values()
+            )
         elif key:
             _res = list(
-                    dict(
-                        itertools.takewhile(
-                            lambda item: item[0].startswith(prefix), _iter)
-                        ).keys()
-                    )
+                dict(
+                    itertools.takewhile(
+                        lambda item: item[0].startswith(prefix), _iter)
+                ).keys()
+            )
 
     else:
         _iter.seek_to_first()

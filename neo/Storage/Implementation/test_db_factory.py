@@ -11,7 +11,6 @@ class LevelDBTest(TestCase):
     DB_TESTPATH = os.path.join(settings.DATA_DIR_PATH, 'UnitTestChain')
     _db = None
 
-
     @classmethod
     def setUpClass(cls):
         settings.setup_unittest_net()
@@ -34,26 +33,25 @@ class LevelDBTest(TestCase):
         self._db.write(b'00001.x', b'x')
         self._db.write(b'00001.y', b'y')
         self._db.write(b'00001.z', b'z')
-        
+
         self.assertEqual(self._db.get(b'00001.x'), b'x')
         self.assertEqual(self._db.get(b'00001.y'), b'y')
         self.assertEqual(self._db.get(b'00001.z'), b'z')
 
-    def test_delete_default (self):
+    def test_delete_default(self):
 
         self._db.write(b'00001.x', b'x')
         self._db.delete(b'00001.z')
-        
+
         self.assertEqual(self._db.get(b'00001.z'), None)
         self.assertEqual(self._db.get(b'00001.z', b'default'), b'default')
 
     @skip('rocksdb implementation is shitty, snapshot is not a real database...')
     # for now rocksdb cannot be used as NotificationDB
-    def test_create_snapshot (self):
+    def test_create_snapshot(self):
         self._db.write(b'00001.x', b'x')
         _snapshot = self._db.createSnapshot()
         print(_snapshot.get(b'00001.x'))
-
 
     def test_iterator(self):
 
@@ -68,27 +66,47 @@ class LevelDBTest(TestCase):
 
         from neo.Storage.Interface.DBInterface import DBProperties
 
+        '''
+            Hhas to be converted as leveldb returns a custom iterator object, 
+            rocksdb just uses lists/dicts. Should not matter, still tests the 
+            same.
+        '''
+        def make_compatible(obj, to):
+            if not isinstance(obj, to):
+                new_obj = to(obj)
+                if isinstance(new_obj, dict):
+                    return new_obj.items()
+                return new_obj
+            return obj
+
         with self._db.openIter(DBProperties(prefix=b'00001', include_value=True, include_key=False)) as iterator:
+
+            iterator = make_compatible(iterator, list)
             self.assertEqual(len(iterator), 3)
             self.assertIsInstance(iterator, list)
 
         with self._db.openIter(DBProperties(prefix=b'00002', include_value=False, include_key=True)) as iterator:
+            iterator = make_compatible(iterator, list)
             self.assertEqual(len(iterator), 4)
             self.assertIsInstance(iterator, list)
 
         with self._db.openIter(DBProperties(prefix=b'00002', include_value=True, include_key=True)) as iterator:
+            iterator = make_compatible(iterator, dict)
             self.assertEqual(len(iterator), 4)
             self.assertIsInstance(iterator, abc.ItemsView)
 
         with self._db.openIter(DBProperties(prefix=None, include_value=True, include_key=True)) as iterator:
+            iterator = make_compatible(iterator, dict)
             self.assertEqual(len(iterator), 7)
             self.assertIsInstance(iterator, abc.ItemsView)
 
         with self._db.openIter(DBProperties(prefix=None, include_value=False, include_key=True)) as iterator:
+            iterator = make_compatible(iterator, list)
             self.assertEqual(len(iterator), 7)
             self.assertIsInstance(iterator, list)
 
         with self._db.openIter(DBProperties(prefix=None, include_value=True, include_key=False)) as iterator:
+            iterator = make_compatible(iterator, list)
             self.assertEqual(len(iterator), 7)
             self.assertIsInstance(iterator, list)
 
@@ -108,7 +126,7 @@ class LevelDBTest(TestCase):
         with self._db.getBatch() as batch:
             batch.put(b'00001.x', b'batch_x')
             batch.delete(b'00002.x')
-        
+
         self.assertEqual(self._db.get(b'00001.x'), b'batch_x')
         self.assertIsNone(self._db.get(b'00002.x'))
 

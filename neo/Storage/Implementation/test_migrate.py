@@ -10,6 +10,7 @@ from neo.logging import log_manager
 
 logger = log_manager.getLogger()
 
+
 class LevelDBTest(TestCase):
 
     FIXTURE_REMOTE_LOC = 'https://s3.us-east-2.amazonaws.com/cityofzion/fixtures/fixtures_v8.tar.gz'
@@ -30,15 +31,15 @@ class LevelDBTest(TestCase):
         if not os.path.exists(self.FIXTURE_FILENAME):
             logger.info(
                 "downloading fixture block database from %s. this may take a while" % self.FIXTURE_REMOTE_LOC)
-        
+
             response = requests.get(self.FIXTURE_REMOTE_LOC, stream=True)
-        
+
             response.raise_for_status()
             os.makedirs(os.path.dirname(self.FIXTURE_FILENAME), exist_ok=True)
             with open(self.FIXTURE_FILENAME, 'wb+') as handle:
                 for block in response.iter_content(1024):
                     handle.write(block)
-        
+
         try:
             tar = tarfile.open(self.FIXTURE_FILENAME)
             tar.extractall(path=settings.DATA_DIR_PATH)
@@ -46,7 +47,6 @@ class LevelDBTest(TestCase):
         except Exception as e:
             raise Exception(
                 "Could not extract tar file - %s. You may want need to remove the fixtures file %s manually to fix this." % (e, self.FIXTURE_FILENAME))
-        
+
         if settings.get_db_backend != 'leveldb':
             migrateDB(fromdb='leveldb', todb=settings.get_db_backend(), path=self.TEST_CHAIN, remove_old=True)
-

@@ -150,7 +150,6 @@ class Blockchain:
                     headers = []
                     logger.info('Recreate headers')
                     with self._db.openIter(DBProperties(prefix=DBPrefix.DATA_Block)) as iterator:
-                        print('type iterator', iterator)
                         for key, value in iterator:
                             dbhash = bytearray(value)[8:]
                             headers.append(Header.FromTrimmedData(binascii.unhexlify(dbhash), 0))

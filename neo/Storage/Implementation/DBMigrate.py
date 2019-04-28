@@ -10,14 +10,15 @@ from pathlib import Path
 
 logger = log_manager.getLogger()
 
+
 def migrateDB(fromdb, todb, path, remove_old=False):
 
-    if os.path.exists(path+'/MIGRATED'):
+    if os.path.exists(path + '/MIGRATED'):
         logger.info('Migration already done')
         return
 
     # move directory to temp dir
-    temp_path = path+'_temp_migrate'
+    temp_path = path + '_temp_migrate'
     shutil.move(path, temp_path)
 
     # create old path again
@@ -38,4 +39,4 @@ def migrateDB(fromdb, todb, path, remove_old=False):
         shutil.rmtree(temp_path)
 
     mig_db_to.closeDB()
-    open(path+'/MIGRATED', 'a').close()
+    open(path + '/MIGRATED', 'a').close()

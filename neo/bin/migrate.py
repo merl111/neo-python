@@ -5,6 +5,7 @@ import binascii
 
 from neo.Storage.Implementation.DBMigrate import migrateDB
 
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -25,7 +26,8 @@ def main():
         exit(2)
 
     migrateDB(fromdb=args.from_db, todb=args.to_db, 
-             path=args.data_dir, remove_old=False)    
+              path=args.data_dir, remove_old=False)    
+
 
 if __name__ == "__main__":
     main()
