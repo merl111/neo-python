@@ -1,4 +1,4 @@
-from neo.Storage.Interface.AbstractDBInterface import AbstractDBInterface
+from neo.Storage.Implementation.AbstractDBImplementation import AbstractDBImplementation
 
 
 def internalDBFactory(classPrefix):
@@ -20,5 +20,5 @@ def internalDBFactory(classPrefix):
 
     return type(
         classPrefix.title() + 'DBImpl',
-        (AbstractDBInterface,),
+        (AbstractDBImplementation,),
         attributes)
