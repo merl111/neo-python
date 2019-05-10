@@ -5,13 +5,25 @@ from neo.Settings import settings
 from neo.logging import log_manager
 
 
-""" 
-Database factory module
+"""Database factory module
 
-Note: Module is used to access the different database implementations.
-Import the module and use the getters to access the different databases.
-Configuration is done in neo.Settings.DATABASE_PROPS dict.
-Each getter returns an instance of the database.
+Note:
+    Module is used to access the different database implementations.
+    Import the module and use the getters to access the different databases.
+    Configuration is done in neo.Settings.DATABASE_PROPS dict.
+    Each getter returns an instance of the database.
+
+Constants:
+    BC_CONST (str): defines the key within the settings.database_properties()
+                    to retrieve the blockchain db properties.
+
+    NOTIF_CONST (str): defines the key within the settings.database_properties()
+                       to retrieve the notification db properties.
+
+    DEBUG_CONST (str): defines the key within the settings.database_properties()
+                       to retrieve the debug storage properties.
+
+    DATABASE_PROPS (dict): The properties defined within the settings module.
 
 """
 
@@ -23,16 +35,16 @@ DEBUG_CONST = 'debug'
 
 DATABASE_PROPS = settings.database_properties()
 
-_blockchain_db_instance = None
-
-_notif_db_instance = None
-
-_debug_db_instance = None
-
 
 def getBlockchainDB(path=None, dbType=None):
     """
     Returns a database instance used with the blockchain class.
+
+    Args:
+        path (str, optional): the full path to the blockchain database directory.
+
+    Returns:
+        _blockchain_db_instance (object): A new blockchain database instance.
     """
 
     if not path:
@@ -49,6 +61,12 @@ def getBlockchainDB(path=None, dbType=None):
 def getNotificationDB(path=None):
     """
     Returns a database instance used with the notification class.
+
+    Args:
+        path (str, optional): the full path to the notification database directory.
+
+    Returns:
+        _notif_db_instance (object): A new notification database instance.
     """
 
     if not path:
@@ -65,6 +83,9 @@ def getNotificationDB(path=None):
 def getDebugStorageDB():
     """
     Returns a database instance used with the debug storage class.
+
+    Returns:
+        _debug_db_instance (object): A new debug storage instance.
     """
     DebugStorageDB = _dbFactory(DEBUG_CONST, DATABASE_PROPS[DEBUG_CONST]['backend'])
     _debug_db_instance = DebugStorageDB(DATABASE_PROPS[DEBUG_CONST]['path'])
@@ -72,6 +93,18 @@ def getDebugStorageDB():
 
 
 def _dbFactory(dbType, backend):
+
+    """ Method to generate a database class.
+
+    Args:
+        dbType (str): Type of the database (Blockchain, Notification, Debug).
+        properties (dict): The properties defined within the settings module.
+
+    Returns:
+        New database class to instantiate a new database.
+
+
+    """
 
     functions = None
     if backend == 'leveldb':
