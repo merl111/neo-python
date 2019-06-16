@@ -1,9 +1,8 @@
 import hashlib
 import datetime
-import traceback
 
-from neo.VM.OpCode import *
-from neo.VM.RandomAccessStack import RandomAccessStack
+import neo.VM.OpCode as opc
+from neo.VM.RandomAccessStack import RandomAccessStack, InvalidStackSize
 from neo.VM.ExecutionContext import ExecutionContext
 from neo.VM import VMState
 from neo.VM.InteropService import Array, Struct, CollectionMixin, Map, Boolean
@@ -13,9 +12,8 @@ from neo.VM.VMFault import VMFault
 from logging import DEBUG as LOGGING_LEVEL_DEBUG
 from neo.logging import log_manager
 from typing import TYPE_CHECKING
-from collections import deque
-from neo.VM.OpCode import ToName
 from neo.VM.Script import Script
+import cProfile
 
 if TYPE_CHECKING:
     from neo.VM.InteropService import BigInteger
@@ -23,6 +21,1095 @@ if TYPE_CHECKING:
 logger = log_manager.getLogger('vm')
 
 int_MaxValue = 2147483647
+
+
+class VMException(Exception):
+    pass
+
+
+def execPUSH0(self, context, opcode):
+    context._EvaluationStack.PushT(bytearray(0))
+
+    # return self.ExecuteImmediate()
+
+
+def execPUSHBYTES(self, context, opcode):
+
+    if not self.CheckMaxItemSize(len(context.CurrentInstruction.Operand)):
+        return False
+    context._EvaluationStack.PushT(context.CurrentInstruction.Operand)
+
+
+def execPUSHOPS(self, context, opcode):
+    topush = int.from_bytes(opcode, 'little') - int.from_bytes(opc.PUSH1, 'little') + 1
+    context._EvaluationStack.PushT(topush)
+
+    # return self.ExecuteImmediate()
+
+
+def execNOP(self, context, opcode):
+    # return self.ExecuteImmediate()
+    pass
+
+
+def execJMPALL(self, context, opcode):
+    offset = context.InstructionPointer + context.CurrentInstruction.TokenI16
+
+    if offset < 0 or offset > context.Script.Length:
+        return self.VM_FAULT_and_report(VMFault.INVALID_JUMP)
+
+    fValue = True
+    if opcode > opc.JMP:
+        fValue = context._EvaluationStack.Pop().GetBoolean()
+        if opcode == opc.JMPIFNOT:
+            fValue = not fValue
+    if fValue:
+        context.InstructionPointer = offset
+    else:
+        context.InstructionPointer += 3
+    return True
+
+
+def execCALL(self, context, opcode):
+    if not self.CheckMaxInvocationStack():
+        return self.VM_FAULT_and_report(VMFault.CALL_EXCEED_MAX_INVOCATIONSTACK_SIZE)
+
+    context_call = self._LoadScriptInternal(context.Script)
+    context_call.InstructionPointer = context.InstructionPointer + context.CurrentInstruction.TokenI16
+
+    if context_call.InstructionPointer < 0 or context_call.InstructionPointer > context_call.Script.Length:
+        return False
+
+    context.EvaluationStack.CopyTo(context_call.EvaluationStack)
+    context.EvaluationStack.Clear()
+
+    # return self.ExecuteImmediate()
+
+
+def execRET(self, context, opcode):
+    context_pop: ExecutionContext = self._InvocationStack.Pop()
+    rvcount = context_pop._RVCount
+
+    if rvcount == -1:
+        rvcount = context_pop.EvaluationStack.Count
+
+    if rvcount > 0:
+        if context_pop.EvaluationStack.Count < rvcount:
+            return self.VM_FAULT_and_report(VMFault.UNKNOWN1)
+
+        if self._InvocationStack.Count == 0:
+            stack_eval = self._ResultStack
+        else:
+            stack_eval = self.CurrentContext.EvaluationStack
+        context_pop.EvaluationStack.CopyTo(stack_eval, rvcount)
+
+    if context_pop._RVCount == -1 and self._InvocationStack.Count > 0:
+        context_pop.AltStack.CopyTo(self.CurrentContext.AltStack)
+
+    if self._InvocationStack.Count == 0:
+        self._VMState = VMState.HALT
+    return True
+
+
+def execAPPTAILCALL(self, context, opcode):
+    if self._Table is None:
+        return self.VM_FAULT_and_report(VMFault.UNKNOWN2)
+
+    if opcode == opc.APPCALL and not self.CheckMaxInvocationStack():
+        return self.VM_FAULT_and_report(VMFault.APPCALL_EXCEED_MAX_INVOCATIONSTACK_SIZE)
+
+    script_hash = context.CurrentInstruction.Operand
+
+    is_normal_call = False
+    for b in script_hash:
+        if b > 0:
+            is_normal_call = True
+
+    if not is_normal_call:
+        script_hash = context._EvaluationStack.Pop().GetByteArray()
+
+    context_new = self._LoadScriptByHash(script_hash)
+    if context_new is None:
+        return self.VM_FAULT_and_report(VMFault.INVALID_CONTRACT, script_hash)
+
+    context._EvaluationStack.CopyTo(context_new.EvaluationStack)
+
+    if opcode == opc.TAILCALL:
+        self._InvocationStack.Remove(1)
+    else:
+        context._EvaluationStack.Clear()
+
+    # return self.ExecuteImmediate()
+
+
+def execSYSCALL(self, context, opcode):
+    if len(context.CurrentInstruction.Operand) > 252:
+        return False
+
+    call = context.CurrentInstruction.Operand.decode('ascii')
+    self.write_log(call)
+    ret = self._Service.Invoke(call, self)
+    if not ret:
+        return self.VM_FAULT_and_report(VMFault.SYSCALL_ERROR,
+                                        context.CurrentInstruction.Operand)
+
+    # return self.ExecuteImmediate()
+
+
+def execDUPFROMALTSTACK(self, context, opcode):
+    context._EvaluationStack.PushT(context._AltStack.Peek())
+
+    # return self.ExecuteImmediate()
+
+
+def execTOALTSTACK(self, context, opcode):
+    context._AltStack.PushT(context._EvaluationStack.Pop())
+    # return self.ExecuteImmediate()
+
+
+def execFROMALTSTACK(self, context, opcode):
+    context._EvaluationStack.PushT(context._AltStack.Pop())
+    # return self.ExecuteImmediate()
+
+
+def execXDROP(self, context, opcode):
+    n = context._EvaluationStack.Pop().GetBigInteger()
+    if n < 0:
+        self._VMState |= VMState.FAULT
+        return
+    context._EvaluationStack.Remove(n)
+
+    # return self.ExecuteImmediate()
+
+
+def execXSWAP(self, context, opcode):
+    n = context._EvaluationStack.Pop().GetBigInteger()
+
+    if n < 0:
+        return self.VM_FAULT_and_report(VMFault.UNKNOWN3)
+
+    # if n == 0 break, same as do x if n > 0
+    if n > 0:
+        item = context._EvaluationStack.Peek(n)
+        context._EvaluationStack.Set(n, context._EvaluationStack.Peek())
+        context._EvaluationStack.Set(0, item)
+
+    # return self.ExecuteImmediate()
+
+
+def execXTUCK(self, context, opcode):
+    n = context._EvaluationStack.Pop().GetBigInteger()
+
+    if n <= 0:
+        return self.VM_FAULT_and_report(VMFault.UNKNOWN4)
+
+    context._EvaluationStack.Insert(n, context._EvaluationStack.Peek())
+
+    # return self.ExecuteImmediate()
+
+
+def execDEPTH(self, context, opcode):
+    context._EvaluationStack.PushT(context._EvaluationStack.Count)
+
+    # return self.ExecuteImmediate()
+
+
+def execDROP(self, context, opcode):
+    context._EvaluationStack.Pop()
+
+    # return self.ExecuteImmediate()
+
+
+def execDUP(self, context, opcode):
+    context._EvaluationStack.PushT(context._EvaluationStack.Peek())
+
+    # return self.ExecuteImmediate()
+
+
+def execNIP(self, context, opcode):
+    context._EvaluationStack.Remove(1)
+
+    # return self.ExecuteImmediate()
+
+
+def execOVER(self, context, opcode):
+    context._EvaluationStack.PushT(context._EvaluationStack.Peek(1))
+
+    # return self.ExecuteImmediate()
+
+
+def execPICK(self, context, opcode):
+    n = context._EvaluationStack.Pop().GetBigInteger()
+    if n < 0:
+        return self.VM_FAULT_and_report(VMFault.UNKNOWN5)
+
+    context._EvaluationStack.PushT(context._EvaluationStack.Peek(n))
+
+    # return self.ExecuteImmediate()
+
+
+def execROLL(self, context, opcode):
+    n = context._EvaluationStack.Pop().GetBigInteger()
+    if n < 0:
+        return self.VM_FAULT_and_report(VMFault.UNKNOWN6)
+
+    if n > 0:
+        context._EvaluationStack.PushT(context._EvaluationStack.Remove(n))
+
+    # return self.ExecuteImmediate()
+
+
+def execROT(self, context, opcode):
+    context._EvaluationStack.PushT(context._EvaluationStack.Remove(2))
+    # return self.ExecuteImmediate()
+
+
+def execSWAP(self, context, opcode):
+    context._EvaluationStack.PushT(context._EvaluationStack.Remove(1))
+
+    # return self.ExecuteImmediate()
+
+
+def execTUCK(self, context, opcode):
+    context._EvaluationStack.Insert(2, context._EvaluationStack.Peek())
+
+    # return self.ExecuteImmediate()
+
+
+def execCAT(self, context, opcode):
+    x2 = context._EvaluationStack.Pop().GetByteArray()
+    x1 = context._EvaluationStack.Pop().GetByteArray()
+
+    if not self.CheckMaxItemSize(len(x1) + len(x2)):
+        return self.VM_FAULT_and_report(VMFault.CAT_EXCEED_MAXITEMSIZE)
+
+    context._EvaluationStack.PushT(x1 + x2)
+
+    # return self.ExecuteImmediate()
+
+
+def execSUBSTR(self, context, opcode):
+    count = context._EvaluationStack.Pop().GetBigInteger()
+    if count < 0:
+        return self.VM_FAULT_and_report(VMFault.SUBSTR_INVALID_LENGTH)
+
+    index = context._EvaluationStack.Pop().GetBigInteger()
+    if index < 0:
+        return self.VM_FAULT_and_report(VMFault.SUBSTR_INVALID_INDEX)
+
+    x = context._EvaluationStack.Pop().GetByteArray()
+
+    context._EvaluationStack.PushT(x[index:count + index])
+
+    # return self.ExecuteImmediate()
+
+
+def execLEFT(self, context, opcode):
+    count = context._EvaluationStack.Pop().GetBigInteger()
+    if count < 0:
+        return self.VM_FAULT_and_report(VMFault.LEFT_INVALID_COUNT)
+
+    x = context._EvaluationStack.Pop().GetByteArray()
+
+    context._EvaluationStack.PushT(x[:count])
+
+    # return self.ExecuteImmediate()
+
+
+def execRIGHT(self, context, opcode):
+    count = context._EvaluationStack.Pop().GetBigInteger()
+    if count < 0:
+        return self.VM_FAULT_and_report(VMFault.RIGHT_INVALID_COUNT)
+
+    x = context._EvaluationStack.Pop().GetByteArray()
+    if len(x) < count:
+        return self.VM_FAULT_and_report(VMFault.RIGHT_UNKNOWN)
+
+    context._EvaluationStack.PushT(x[-count:])
+
+    # return self.ExecuteImmediate()
+
+
+def execSIZE(self, context, opcode):
+    x = context._EvaluationStack.Pop()
+    context._EvaluationStack.PushT(x.GetByteLength())
+
+    # return self.ExecuteImmediate()
+
+
+def execINVERT(self, context, opcode):
+    x = context._EvaluationStack.Pop().GetBigInteger()
+    context._EvaluationStack.PushT(~x)
+
+    # return self.ExecuteImmediate()
+
+
+def execAND(self, context, opcode):
+    x2 = context._EvaluationStack.Pop().GetBigInteger()
+    x1 = context._EvaluationStack.Pop().GetBigInteger()
+    context._EvaluationStack.PushT(x1 & x2)
+
+    # return self.ExecuteImmediate()
+
+
+def execOR(self, context, opcode):
+    x2 = context._EvaluationStack.Pop().GetBigInteger()
+    x1 = context._EvaluationStack.Pop().GetBigInteger()
+    context._EvaluationStack.PushT(x1 | x2)
+
+    # return self.ExecuteImmediate()
+
+
+def execXOR(self, context, opcode):
+    x2 = context._EvaluationStack.Pop().GetBigInteger()
+    x1 = context._EvaluationStack.Pop().GetBigInteger()
+    context._EvaluationStack.PushT(x1 ^ x2)
+
+    # return self.ExecuteImmediate()
+
+
+def execEQUAL(self, context, opcode):
+    x2 = context._EvaluationStack.Pop()
+    x1 = context._EvaluationStack.Pop()
+    context._EvaluationStack.PushT(x1.Equals(x2))
+
+    # return self.ExecuteImmediate()
+
+
+def execINC(self, context, opcode):
+    x = context._EvaluationStack.Pop().GetBigInteger()
+
+    if not self.CheckBigInteger(x) or not self.CheckBigInteger(x + 1):
+        return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
+
+    context._EvaluationStack.PushT(x + 1)
+
+    # return self.ExecuteImmediate()
+
+
+def execDEC(self, context, opcode):
+    x = context._EvaluationStack.Pop().GetBigInteger()
+
+    if not self.CheckBigInteger(x) or not self.CheckBigInteger(x + 1):
+        return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
+
+    context._EvaluationStack.PushT(x - 1)
+
+    # return self.ExecuteImmediate()
+
+
+def execSIGN(self, context, opcode):
+    x = context._EvaluationStack.Pop().GetBigInteger()
+    context._EvaluationStack.PushT(x.Sign)
+
+    # return self.ExecuteImmediate()
+
+
+def execNEGATE(self, context, opcode):
+    x = context._EvaluationStack.Pop().GetBigInteger()
+    context._EvaluationStack.PushT(-x)
+
+    # return self.ExecuteImmediate()
+
+
+def execABS(self, context, opcode):
+    x = context._EvaluationStack.Pop().GetBigInteger()
+    context._EvaluationStack.PushT(abs(x))
+
+    # return self.ExecuteImmediate()
+
+
+def execNOT(self, context, opcode):
+    x = context._EvaluationStack.Pop().GetBigInteger()
+    context._EvaluationStack.PushT(not x)
+
+    # return self.ExecuteImmediate()
+
+
+def execNZ(self, context, opcode):
+    x = context._EvaluationStack.Pop().GetBigInteger()
+    context._EvaluationStack.PushT(x is not 0)
+
+    # return self.ExecuteImmediate()
+
+
+def execADD(self, context, opcode):
+    x1 = context._EvaluationStack.Pop().GetBigInteger()
+    x2 = context._EvaluationStack.Pop().GetBigInteger()
+
+    if not self.CheckBigInteger(x1) or not self.CheckBigInteger(x2) or not self.CheckBigInteger(x1 + x2):
+        return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
+
+    context._EvaluationStack.PushT(x1 + x2)
+
+    # return self.ExecuteImmediate()
+
+
+def execSUB(self, context, opcode):
+    x2 = context._EvaluationStack.Pop().GetBigInteger()
+    x1 = context._EvaluationStack.Pop().GetBigInteger()
+
+    if not self.CheckBigInteger(x1) or not self.CheckBigInteger(x2) or not self.CheckBigInteger(x1 - x2):
+        return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
+
+    context._EvaluationStack.PushT(x1 - x2)
+
+    # return self.ExecuteImmediate()
+
+
+def execMUL(self, context, opcode):
+    x1 = context._EvaluationStack.Pop().GetBigInteger()
+    if not self.CheckBigInteger(x1):
+        return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
+
+    x2 = context._EvaluationStack.Pop().GetBigInteger()
+    if not self.CheckBigInteger(x2):
+        return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
+
+    result = x1 * x2
+    if not self.CheckBigInteger(result):
+        return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
+
+    context._EvaluationStack.PushT(result)
+
+    # return self.ExecuteImmediate()
+
+
+def execDIV(self, context, opcode):
+    x2 = context._EvaluationStack.Pop().GetBigInteger()
+    if not self.CheckBigInteger(x2):
+        return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
+
+    x1 = context._EvaluationStack.Pop().GetBigInteger()
+    if not self.CheckBigInteger(x1):
+        return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
+
+    context._EvaluationStack.PushT(x1 / x2)
+
+    # return self.ExecuteImmediate()
+
+
+def execMOD(self, context, opcode):
+    x2 = context._EvaluationStack.Pop().GetBigInteger()
+    if not self.CheckBigInteger(x2):
+        return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
+
+    x1 = context._EvaluationStack.Pop().GetBigInteger()
+    if not self.CheckBigInteger(x1):
+        return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
+
+    context._EvaluationStack.PushT(x1 % x2)
+
+    # return self.ExecuteImmediate()
+
+
+def execSHL(self, context, opcode):
+    shift = context._EvaluationStack.Pop().GetBigInteger()
+    if not self.CheckShift(shift):
+        return self.VM_FAULT_and_report(VMFault.INVALID_SHIFT)
+
+    x = context._EvaluationStack.Pop().GetBigInteger()
+
+    if not self.CheckBigInteger(x):
+        return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
+
+    x = x << shift
+
+    if not self.CheckBigInteger(x):
+        return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
+
+    context._EvaluationStack.PushT(x)
+
+    # return self.ExecuteImmediate()
+
+
+def execSHR(self, context, opcode):
+    shift = context._EvaluationStack.Pop().GetBigInteger()
+    if not self.CheckShift(shift):
+        return self.VM_FAULT_and_report(VMFault.INVALID_SHIFT)
+
+    x = context._EvaluationStack.Pop().GetBigInteger()
+
+    if not self.CheckBigInteger(x):
+        return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
+
+    context._EvaluationStack.PushT(x >> shift)
+
+    # return self.ExecuteImmediate()
+
+
+def execBOOLAND(self, context, opcode):
+    x2 = context._EvaluationStack.Pop().GetBoolean()
+    x1 = context._EvaluationStack.Pop().GetBoolean()
+
+    context._EvaluationStack.PushT(x1 and x2)
+
+    # return self.ExecuteImmediate()
+
+
+def execBOOLOR(self, context, opcode):
+    x2 = context._EvaluationStack.Pop().GetBoolean()
+    x1 = context._EvaluationStack.Pop().GetBoolean()
+
+    context._EvaluationStack.PushT(x1 or x2)
+
+    # return self.ExecuteImmediate()
+
+
+def execNUMEQUAL(self, context, opcode):
+    x2 = context._EvaluationStack.Pop().GetBigInteger()
+    x1 = context._EvaluationStack.Pop().GetBigInteger()
+
+    context._EvaluationStack.PushT(x2 == x1)
+
+    # return self.ExecuteImmediate()
+
+
+def execNUMNOTEQUAL(self, context, opcode):
+    x2 = context._EvaluationStack.Pop().GetBigInteger()
+    x1 = context._EvaluationStack.Pop().GetBigInteger()
+
+    context._EvaluationStack.PushT(x1 != x2)
+
+    # return self.ExecuteImmediate()
+
+
+def execLT(self, context, opcode):
+    x2 = context._EvaluationStack.Pop().GetBigInteger()
+    x1 = context._EvaluationStack.Pop().GetBigInteger()
+
+    context._EvaluationStack.PushT(x1 < x2)
+
+    # return self.ExecuteImmediate()
+
+
+def execGT(self, context, opcode):
+    x2 = context._EvaluationStack.Pop().GetBigInteger()
+    x1 = context._EvaluationStack.Pop().GetBigInteger()
+
+    context._EvaluationStack.PushT(x1 > x2)
+
+    # return self.ExecuteImmediate()
+
+
+def execLTE(self, context, opcode):
+    x2 = context._EvaluationStack.Pop().GetBigInteger()
+    x1 = context._EvaluationStack.Pop().GetBigInteger()
+
+    context._EvaluationStack.PushT(x1 <= x2)
+
+    # return self.ExecuteImmediate()
+
+
+def execGTE(self, context, opcode):
+    x2 = context._EvaluationStack.Pop().GetBigInteger()
+    x1 = context._EvaluationStack.Pop().GetBigInteger()
+
+    context._EvaluationStack.PushT(x1 >= x2)
+
+    # return self.ExecuteImmediate()
+
+
+def execMIN(self, context, opcode):
+    x2 = context._EvaluationStack.Pop().GetBigInteger()
+    x1 = context._EvaluationStack.Pop().GetBigInteger()
+
+    context._EvaluationStack.PushT(min(x1, x2))
+
+    # return self.ExecuteImmediate()
+
+
+def execMAX(self, context, opcode):
+    x2 = context._EvaluationStack.Pop().GetBigInteger()
+    x1 = context._EvaluationStack.Pop().GetBigInteger()
+
+    context._EvaluationStack.PushT(max(x1, x2))
+
+    # return self.ExecuteImmediate()
+
+
+def execWITHIN(self, context, opcode):
+    b = context._EvaluationStack.Pop().GetBigInteger()
+    a = context._EvaluationStack.Pop().GetBigInteger()
+    x = context._EvaluationStack.Pop().GetBigInteger()
+
+    context._EvaluationStack.PushT(a <= x and x < b)
+
+    # return self.ExecuteImmediate()
+
+
+def execSHA1(self, context, opcode):
+    h = hashlib.sha1(context._EvaluationStack.Pop().GetByteArray())
+    context._EvaluationStack.PushT(h.digest())
+
+    # return self.ExecuteImmediate()
+
+
+def execSHA256(self, context, opcode):
+    h = hashlib.sha256(context._EvaluationStack.Pop().GetByteArray())
+    context._EvaluationStack.PushT(h.digest())
+
+    # return self.ExecuteImmediate()
+
+
+def execHASH160(self, context, opcode):
+    context._EvaluationStack.PushT(self.Crypto.Hash160(context._EvaluationStack.Pop().GetByteArray()))
+
+    # return self.ExecuteImmediate()
+
+
+def execHASH256(self, context, opcode):
+    context._EvaluationStack.PushT(self.Crypto.Hash256(context._EvaluationStack.Pop().GetByteArray()))
+
+    # return self.ExecuteImmediate()
+
+
+def execCHECKSIG(self, context, opcode):
+    pubkey = context._EvaluationStack.Pop().GetByteArray()
+    sig = context._EvaluationStack.Pop().GetByteArray()
+    container = self.ScriptContainer
+    if not container:
+        logger.debug("Cannot check signature without container")
+        context._EvaluationStack.PushT(False)
+        return
+    try:
+        res = self.Crypto.VerifySignature(container.GetMessage(), sig, pubkey)
+        context._EvaluationStack.PushT(res)
+    except Exception as e:
+        context._EvaluationStack.PushT(False)
+        logger.debug("Could not checksig: %s " % e)
+
+    # return self.ExecuteImmediate()
+
+
+def execVERIFY(self, context, opcode):
+    pubkey = context._EvaluationStack.Pop().GetByteArray()
+    sig = context._EvaluationStack.Pop().GetByteArray()
+    message = context._EvaluationStack.Pop().GetByteArray()
+    try:
+        res = self.Crypto.VerifySignature(message, sig, pubkey, unhex=False)
+        context._EvaluationStack.PushT(res)
+    except Exception as e:
+        context._EvaluationStack.PushT(False)
+        logger.debug("Could not verify: %s " % e)
+
+    # return self.ExecuteImmediate()
+
+
+def execCHECKMULTISIG(self, context, opcode):
+    item = context._EvaluationStack.Pop()
+    pubkeys = []
+
+    if isinstance(item, Array):
+
+        for p in item.GetArray():
+            pubkeys.append(p.GetByteArray())
+        n = len(pubkeys)
+        if n == 0:
+            return self.VM_FAULT_and_report(VMFault.CHECKMULTISIG_INVALID_PUBLICKEY_COUNT)
+
+    else:
+        n = item.GetBigInteger()
+
+        if n < 1 or n > context._EvaluationStack.Count:
+            return self.VM_FAULT_and_report(VMFault.CHECKMULTISIG_INVALID_PUBLICKEY_COUNT)
+
+        for i in range(0, n):
+            pubkeys.append(context._EvaluationStack.Pop().GetByteArray())
+
+    item = context._EvaluationStack.Pop()
+    sigs = []
+
+    if isinstance(item, Array):
+        for s in item.GetArray():
+            sigs.append(s.GetByteArray())
+        m = len(sigs)
+
+        if m == 0 or m > n:
+            return self.VM_FAULT_and_report(VMFault.CHECKMULTISIG_SIGNATURE_ERROR, m, n)
+    else:
+        m = item.GetBigInteger()
+
+        if m < 1 or m > n or m > context._EvaluationStack.Count:
+            return self.VM_FAULT_and_report(VMFault.CHECKMULTISIG_SIGNATURE_ERROR, m, n)
+
+        for i in range(0, m):
+            sigs.append(context._EvaluationStack.Pop().GetByteArray())
+
+    message = self.ScriptContainer.GetMessage() if self.ScriptContainer else ''
+
+    fSuccess = True
+
+    try:
+
+        i = 0
+        j = 0
+
+        while fSuccess and i < m and j < n:
+
+            if self.Crypto.VerifySignature(message, sigs[i], pubkeys[j]):
+                i += 1
+            j += 1
+
+            if m - i > n - j:
+                fSuccess = False
+
+    except Exception as e:
+        fSuccess = False
+
+    context._EvaluationStack.PushT(fSuccess)
+
+    # return self.ExecuteImmediate()
+
+
+def execARRAYSIZE(self, context, opcode):
+    item = context._EvaluationStack.Pop()
+
+    if not item:
+        return self.VM_FAULT_and_report(VMFault.UNKNOWN7)
+
+    if isinstance(item, CollectionMixin):
+        context._EvaluationStack.PushT(item.Count)
+
+    else:
+        context._EvaluationStack.PushT(len(item.GetByteArray()))
+
+    # return self.ExecuteImmediate()
+
+
+def execPACK(self, context, opcode):
+    size = context._EvaluationStack.Pop().GetBigInteger()
+
+    if size < 0 or size > context._EvaluationStack.Count or not self.CheckArraySize(size):
+        return self.VM_FAULT_and_report(VMFault.UNKNOWN8)
+
+    items = []
+
+    for i in range(0, size):
+        topack = context._EvaluationStack.Pop()
+        items.append(topack)
+
+    context._EvaluationStack.PushT(items)
+
+    # return self.ExecuteImmediate()
+
+
+def execUNPACK(self, context, opcode):
+    item = context._EvaluationStack.Pop()
+
+    if not isinstance(item, Array):
+        return self.VM_FAULT_and_report(VMFault.UNPACK_INVALID_TYPE, item)
+
+    items = item.GetArray()
+    items.reverse()
+
+    [context._EvaluationStack.PushT(i) for i in items]
+
+    context._EvaluationStack.PushT(len(items))
+
+    # return self.ExecuteImmediate()
+
+
+def execPICKITEM(self, context, opcode):
+    key = context._EvaluationStack.Pop()
+
+    if isinstance(key, CollectionMixin):
+        # key must be an array index or dictionary key, but not a collection
+        return self.VM_FAULT_and_report(VMFault.KEY_IS_COLLECTION, key)
+
+    collection = context._EvaluationStack.Pop()
+
+    if isinstance(collection, Array):
+        index = key.GetBigInteger()
+        if index < 0 or index >= collection.Count:
+            return self.VM_FAULT_and_report(VMFault.PICKITEM_INVALID_INDEX, index, collection.Count)
+
+        items = collection.GetArray()
+        to_pick = items[index]
+        context._EvaluationStack.PushT(to_pick)
+
+    elif isinstance(collection, Map):
+        success, value = collection.TryGetValue(key)
+
+        if success:
+            context._EvaluationStack.PushT(value)
+
+        else:
+            return self.VM_FAULT_and_report(VMFault.DICT_KEY_NOT_FOUND, key, collection.Keys)
+    else:
+        return self.VM_FAULT_and_report(VMFault.PICKITEM_INVALID_TYPE, key, collection)
+
+    # return self.ExecuteImmediate()
+
+
+def execSETITEM(self, context, opcode):
+    value = context._EvaluationStack.Pop()
+
+    if isinstance(value, Struct):
+        value = value.Clone()
+
+    key = context._EvaluationStack.Pop()
+
+    if isinstance(key, CollectionMixin):
+        return self.VM_FAULT_and_report(VMFault.KEY_IS_COLLECTION)
+
+    collection = context._EvaluationStack.Pop()
+
+    if isinstance(collection, Array):
+
+        index = key.GetBigInteger()
+
+        if index < 0 or index >= collection.Count:
+            return self.VM_FAULT_and_report(VMFault.SETITEM_INVALID_INDEX)
+
+        items = collection.GetArray()
+        items[index] = value
+
+    elif isinstance(collection, Map):
+        if not collection.ContainsKey(key) and not self.CheckArraySize(collection.Count + 1):
+            return self.VM_FAULT_and_report(VMFault.SETITEM_INVALID_MAP)
+
+        collection.SetItem(key, value)
+
+    else:
+        return self.VM_FAULT_and_report(VMFault.SETITEM_INVALID_TYPE, key, collection)
+
+    # return self.ExecuteImmediate()
+
+
+def execNEWARRAYSTRUCT(self, context, opcode):
+
+    item = context._EvaluationStack.Pop()
+    if isinstance(item, Array):
+        result = None
+        if isinstance(item, Struct):
+            if opcode == opc.NEWSTRUCT:
+                result = item
+        else:
+            if opcode == opc.NEWARRAY:
+                result = item
+
+        if result is None:
+            result = Array(item) if opcode == opc.NEWARRAY else Struct(item)
+
+        context._EvaluationStack.PushT(result)
+
+    else:
+        count = item.GetBigInteger()
+        if count < 0:
+            return self.VM_FAULT_and_report(VMFault.NEWARRAY_NEGATIVE_COUNT)
+
+        if not self.CheckArraySize(count):
+            return self.VM_FAULT_and_report(VMFault.NEWARRAY_EXCEED_ARRAYLIMIT)
+
+        items = [Boolean(False) for i in range(0, count)]
+
+        result = Array(items) if opcode == opc.NEWARRAY else Struct(items)
+
+        context._EvaluationStack.PushT(result)
+
+    # return self.ExecuteImmediate()
+
+
+def execNEWMAP(self, context, opcode):
+    context._EvaluationStack.PushT(Map())
+
+    # return self.ExecuteImmediate()
+
+
+def execAPPEND(self, context, opcode):
+    newItem = context._EvaluationStack.Pop()
+
+    if isinstance(newItem, Struct):
+        newItem = newItem.Clone()
+
+    arrItem = context._EvaluationStack.Pop()
+
+    if not isinstance(arrItem, Array):
+        return self.VM_FAULT_and_report(VMFault.APPEND_INVALID_TYPE, arrItem)
+
+    arr = arrItem.GetArray()
+    if not self.CheckArraySize(len(arr) + 1):
+        return self.VM_FAULT_and_report(VMFault.APPEND_EXCEED_ARRAYLIMIT)
+    arr.append(newItem)
+
+    # return self.ExecuteImmediate()
+
+
+def execREVERSE(self, context, opcode):
+    arrItem = context._EvaluationStack.Pop()
+
+    if not isinstance(arrItem, Array):
+        return self.VM_FAULT_and_report(VMFault.REVERSE_INVALID_TYPE, arrItem)
+
+    arrItem.Reverse()
+
+    # return self.ExecuteImmediate()
+
+
+def execREMOVE(self, context, opcode):
+    key = context._EvaluationStack.Pop()
+
+    if isinstance(key, CollectionMixin):
+        return self.VM_FAULT_and_report(VMFault.UNKNOWN1)
+
+    collection = context._EvaluationStack.Pop()
+
+    if isinstance(collection, Array):
+
+        index = key.GetBigInteger()
+
+        if index < 0 or index >= collection.Count:
+            return self.VM_FAULT_and_report(VMFault.REMOVE_INVALID_INDEX, index, collection.Count)
+
+        collection.RemoveAt(index)
+
+    elif isinstance(collection, Map):
+
+        collection.Remove(key)
+
+    else:
+
+        return self.VM_FAULT_and_report(VMFault.REMOVE_INVALID_TYPE, key, collection)
+
+    # return self.ExecuteImmediate()
+
+
+def execHASKEY(self, context, opcode):
+    key = context._EvaluationStack.Pop()
+
+    if isinstance(key, CollectionMixin):
+        return self.VM_FAULT_and_report(VMFault.DICT_KEY_ERROR)
+
+    collection = context._EvaluationStack.Pop()
+
+    if isinstance(collection, Array):
+
+        index = key.GetBigInteger()
+
+        if index < 0:
+            return self.VM_FAULT_and_report(VMFault.DICT_KEY_ERROR)
+
+        context._EvaluationStack.PushT(index < collection.Count)
+
+    elif isinstance(collection, Map):
+
+        context._EvaluationStack.PushT(collection.ContainsKey(key))
+
+    else:
+
+        return self.VM_FAULT_and_report(VMFault.DICT_KEY_ERROR)
+
+    # return self.ExecuteImmediate()
+
+
+def execKEYS(self, context, opcode):
+    collection = context._EvaluationStack.Pop()
+
+    if isinstance(collection, Map):
+
+        context._EvaluationStack.PushT(Array(collection.Keys))
+    else:
+        return self.VM_FAULT_and_report(VMFault.DICT_KEY_ERROR)
+
+    # return self.ExecuteImmediate()
+
+
+def execVALUES(self, context, opcode):
+    collection = context._EvaluationStack.Pop()
+    values = []
+
+    if isinstance(collection, Map):
+        values = collection.Values
+
+    elif isinstance(collection, Array):
+        values = collection
+
+    else:
+        return self.VM_FAULT_and_report(VMFault.DICT_KEY_ERROR)
+
+    newArray = Array()
+    for item in values:
+        if isinstance(item, Struct):
+            newArray.Add(item.Clone())
+        else:
+            newArray.Add(item)
+
+    context._EvaluationStack.PushT(newArray)
+
+    # return self.ExecuteImmediate()
+
+
+def execCALL_I(self, context, opcode):
+    if not self.CheckMaxInvocationStack():
+        return self.VM_FAULT_and_report(VMFault.CALL__I_EXCEED_MAX_INVOCATIONSTACK_SIZE)
+
+    rvcount = context.CurrentInstruction.Operand[0]
+    pcount = context.CurrentInstruction.Operand[1]
+
+    if context._EvaluationStack.Count < pcount:
+        return self.VM_FAULT_and_report(VMFault.UNKNOWN_STACKISOLATION)
+
+    context_call = self._LoadScriptInternal(context.Script, rvcount)
+    context_call.InstructionPointer = context.InstructionPointer + context.CurrentInstruction.TokenI16_1 + 2
+
+    if context_call.InstructionPointer < 0 or context_call.InstructionPointer > context_call.Script.Length:
+        return False
+
+    context._EvaluationStack.CopyTo(context_call.EvaluationStack, pcount)
+
+    for i in range(0, pcount, 1):
+        context._EvaluationStack.Pop()
+
+    # return self.ExecuteImmediate()
+
+
+def execCALL_E(self, context, opcode):
+    if self._Table is None:
+        return self.VM_FAULT_and_report(VMFault.UNKNOWN_STACKISOLATION2)
+
+    rvcount = context.CurrentInstruction.Operand[0]
+    pcount = context.CurrentInstruction.Operand[1]
+
+    if context._EvaluationStack.Count < pcount:
+        return self.VM_FAULT_and_report(VMFault.UNKNOWN_STACKISOLATION)
+
+    if opcode in [opc.CALL_ET, opc.CALL_EDT]:
+        if context._RVCount != rvcount:
+            return self.VM_FAULT_and_report(VMFault.UNKNOWN_STACKISOLATION3)
+    else:
+        if not self.CheckMaxInvocationStack():
+            return self.VM_FAULT_and_report(VMFault.UNKNOWN_EXCEED_MAX_INVOCATIONSTACK_SIZE)
+
+    if opcode in [opc.CALL_ED, opc.CALL_EDT]:
+        script_hash = context._EvaluationStack.Pop().GetByteArray()
+    else:
+        script_hash = context.CurrentInstruction.ReadBytes(2, 20)
+
+    context_new = self._LoadScriptByHash(script_hash, rvcount)
+    if context_new is None:
+        return self.VM_FAULT_and_report(VMFault.INVALID_CONTRACT, script_hash)
+
+    context._EvaluationStack.CopyTo(context_new.EvaluationStack, pcount)
+
+    if opcode in [opc.CALL_ET, opc.CALL_EDT]:
+        self._InvocationStack.Remove(1)
+    else:
+        for i in range(0, pcount, 1):
+            context._EvaluationStack.Pop()
+
+    # return self.ExecuteImmediate()
+
+
+def execTHROW(self, context, opcode):
+    return self.VM_FAULT_and_report(VMFault.THROW)
+
+
+def execTHROWIFNOT(self, context, opcode):
+    if not context._EvaluationStack.Pop().GetBoolean():
+        return self.VM_FAULT_and_report(VMFault.THROWIFNOT)
+
+    # return self.ExecuteImmediate()
 
 
 class ExecutionEngine:
@@ -38,6 +1125,194 @@ class ExecutionEngine:
     maxArraySize = 1024
     maxStackSize = 2048
     maxInvocationStackSize = 1024
+    opDict = {
+        opc.PUSH0: execPUSH0,
+        opc.PUSHF: execPUSH0,
+        opc.PUSHBYTES1: execPUSHBYTES,
+        opc.PUSHBYTES2: execPUSHBYTES,
+        opc.PUSHBYTES3: execPUSHBYTES,
+        opc.PUSHBYTES4: execPUSHBYTES,
+        opc.PUSHBYTES5: execPUSHBYTES,
+        opc.PUSHBYTES6: execPUSHBYTES,
+        opc.PUSHBYTES7: execPUSHBYTES,
+        opc.PUSHBYTES8: execPUSHBYTES,
+        opc.PUSHBYTES9: execPUSHBYTES,
+        opc.PUSHBYTES10: execPUSHBYTES,
+        opc.PUSHBYTES11: execPUSHBYTES,
+        opc.PUSHBYTES12: execPUSHBYTES,
+        opc.PUSHBYTES13: execPUSHBYTES,
+        opc.PUSHBYTES14: execPUSHBYTES,
+        opc.PUSHBYTES15: execPUSHBYTES,
+        opc.PUSHBYTES16: execPUSHBYTES,
+        opc.PUSHBYTES17: execPUSHBYTES,
+        opc.PUSHBYTES18: execPUSHBYTES,
+        opc.PUSHBYTES19: execPUSHBYTES,
+        opc.PUSHBYTES20: execPUSHBYTES,
+        opc.PUSHBYTES21: execPUSHBYTES,
+        opc.PUSHBYTES22: execPUSHBYTES,
+        opc.PUSHBYTES23: execPUSHBYTES,
+        opc.PUSHBYTES24: execPUSHBYTES,
+        opc.PUSHBYTES25: execPUSHBYTES,
+        opc.PUSHBYTES26: execPUSHBYTES,
+        opc.PUSHBYTES27: execPUSHBYTES,
+        opc.PUSHBYTES28: execPUSHBYTES,
+        opc.PUSHBYTES29: execPUSHBYTES,
+        opc.PUSHBYTES30: execPUSHBYTES,
+        opc.PUSHBYTES31: execPUSHBYTES,
+        opc.PUSHBYTES32: execPUSHBYTES,
+        opc.PUSHBYTES33: execPUSHBYTES,
+        opc.PUSHBYTES34: execPUSHBYTES,
+        opc.PUSHBYTES35: execPUSHBYTES,
+        opc.PUSHBYTES36: execPUSHBYTES,
+        opc.PUSHBYTES37: execPUSHBYTES,
+        opc.PUSHBYTES38: execPUSHBYTES,
+        opc.PUSHBYTES39: execPUSHBYTES,
+        opc.PUSHBYTES40: execPUSHBYTES,
+        opc.PUSHBYTES41: execPUSHBYTES,
+        opc.PUSHBYTES42: execPUSHBYTES,
+        opc.PUSHBYTES43: execPUSHBYTES,
+        opc.PUSHBYTES44: execPUSHBYTES,
+        opc.PUSHBYTES45: execPUSHBYTES,
+        opc.PUSHBYTES46: execPUSHBYTES,
+        opc.PUSHBYTES47: execPUSHBYTES,
+        opc.PUSHBYTES48: execPUSHBYTES,
+        opc.PUSHBYTES49: execPUSHBYTES,
+        opc.PUSHBYTES50: execPUSHBYTES,
+        opc.PUSHBYTES51: execPUSHBYTES,
+        opc.PUSHBYTES52: execPUSHBYTES,
+        opc.PUSHBYTES53: execPUSHBYTES,
+        opc.PUSHBYTES54: execPUSHBYTES,
+        opc.PUSHBYTES55: execPUSHBYTES,
+        opc.PUSHBYTES56: execPUSHBYTES,
+        opc.PUSHBYTES57: execPUSHBYTES,
+        opc.PUSHBYTES58: execPUSHBYTES,
+        opc.PUSHBYTES59: execPUSHBYTES,
+        opc.PUSHBYTES60: execPUSHBYTES,
+        opc.PUSHBYTES61: execPUSHBYTES,
+        opc.PUSHBYTES62: execPUSHBYTES,
+        opc.PUSHBYTES63: execPUSHBYTES,
+        opc.PUSHBYTES64: execPUSHBYTES,
+        opc.PUSHBYTES65: execPUSHBYTES,
+        opc.PUSHBYTES66: execPUSHBYTES,
+        opc.PUSHBYTES67: execPUSHBYTES,
+        opc.PUSHBYTES68: execPUSHBYTES,
+        opc.PUSHBYTES69: execPUSHBYTES,
+        opc.PUSHBYTES70: execPUSHBYTES,
+        opc.PUSHBYTES71: execPUSHBYTES,
+        opc.PUSHBYTES72: execPUSHBYTES,
+        opc.PUSHBYTES73: execPUSHBYTES,
+        opc.PUSHBYTES74: execPUSHBYTES,
+        opc.PUSHBYTES75: execPUSHBYTES,
+        opc.PUSHDATA1: execPUSHBYTES,
+        opc.PUSHDATA2: execPUSHBYTES,
+        opc.PUSHDATA4: execPUSHBYTES,
+        opc.PUSHM1: execPUSHOPS,
+        opc.PUSH1: execPUSHOPS,
+        opc.PUSHT: execPUSHOPS,
+        opc.PUSH2: execPUSHOPS,
+        opc.PUSH3: execPUSHOPS,
+        opc.PUSH4: execPUSHOPS,
+        opc.PUSH5: execPUSHOPS,
+        opc.PUSH6: execPUSHOPS,
+        opc.PUSH7: execPUSHOPS,
+        opc.PUSH8: execPUSHOPS,
+        opc.PUSH9: execPUSHOPS,
+        opc.PUSH10: execPUSHOPS,
+        opc.PUSH11: execPUSHOPS,
+        opc.PUSH12: execPUSHOPS,
+        opc.PUSH13: execPUSHOPS,
+        opc.PUSH14: execPUSHOPS,
+        opc.PUSH15: execPUSHOPS,
+        opc.PUSH16: execPUSHOPS,
+        opc.NOP: execNOP,
+        opc.JMP: execJMPALL,
+        opc.JMPIF: execJMPALL,
+        opc.JMPIFNOT: execJMPALL,
+        opc.CALL: execCALL,
+        opc.RET: execRET,
+        opc.APPCALL: execAPPTAILCALL,
+        opc.TAILCALL: execAPPTAILCALL,
+        opc.SYSCALL: execSYSCALL,
+        opc.DUPFROMALTSTACK: execDUPFROMALTSTACK,
+        opc.TOALTSTACK: execTOALTSTACK,
+        opc.FROMALTSTACK: execFROMALTSTACK,
+        opc.XDROP: execXDROP,
+        opc.XSWAP: execXSWAP,
+        opc.XTUCK: execXTUCK,
+        opc.DEPTH: execDEPTH,
+        opc.DROP: execDROP,
+        opc.DUP: execDUP,
+        opc.NIP: execNIP,
+        opc.OVER: execOVER,
+        opc.PICK: execPICK,
+        opc.ROLL: execROLL,
+        opc.ROT: execROT,
+        opc.SWAP: execSWAP,
+        opc.TUCK: execTUCK,
+        opc.CAT: execCAT,
+        opc.SUBSTR: execSUBSTR,
+        opc.LEFT: execLEFT,
+        opc.RIGHT: execRIGHT,
+        opc.SIZE: execSIZE,
+        opc.INVERT: execINVERT,
+        opc.AND: execAND,
+        opc.OR: execOR,
+        opc.XOR: execXOR,
+        opc.EQUAL: execEQUAL,
+        opc.INC: execINC,
+        opc.DEC: execDEC,
+        opc.SIGN: execSIGN,
+        opc.NEGATE: execNEGATE,
+        opc.ABS: execABS,
+        opc.NOT: execNOT,
+        opc.NZ: execNZ,
+        opc.ADD: execADD,
+        opc.SUB: execSUB,
+        opc.MUL: execMUL,
+        opc.DIV: execDIV,
+        opc.MOD: execMOD,
+        opc.SHL: execSHL,
+        opc.SHR: execSHR,
+        opc.BOOLAND: execBOOLAND,
+        opc.BOOLOR: execBOOLOR,
+        opc.NUMEQUAL: execNUMEQUAL,
+        opc.NUMNOTEQUAL: execNUMNOTEQUAL,
+        opc.LT: execLT,
+        opc.GT: execGT,
+        opc.LTE: execLTE,
+        opc.GTE: execGTE,
+        opc.MIN: execMIN,
+        opc.MAX: execMAX,
+        opc.WITHIN: execWITHIN,
+        opc.SHA1: execSHA1,
+        opc.SHA256: execSHA256,
+        opc.HASH160: execHASH160,
+        opc.HASH256: execHASH256,
+        opc.CHECKSIG: execCHECKSIG,
+        opc.VERIFY: execVERIFY,
+        opc.CHECKMULTISIG: execCHECKMULTISIG,
+        opc.ARRAYSIZE: execARRAYSIZE,
+        opc.PACK: execPACK,
+        opc.UNPACK: execUNPACK,
+        opc.PICKITEM: execPICKITEM,
+        opc.SETITEM: execSETITEM,
+        opc.NEWARRAY: execNEWARRAYSTRUCT,
+        opc.NEWSTRUCT: execNEWARRAYSTRUCT,
+        opc.NEWMAP: execNEWMAP,
+        opc.APPEND: execAPPEND,
+        opc.REVERSE: execREVERSE,
+        opc.REMOVE: execREMOVE,
+        opc.HASKEY: execHASKEY,
+        opc.KEYS: execKEYS,
+        opc.VALUES: execVALUES,
+        opc.CALL_I: execCALL_I,
+        opc.CALL_E: execCALL_E,
+        opc.CALL_ED: execCALL_E,
+        opc.CALL_ET: execCALL_E,
+        opc.CALL_EDT: execCALL_E,
+        opc.THROW: execTHROW,
+        opc.THROWIFNOT: execTHROWIFNOT
+    }
 
     def __init__(self, container=None, crypto=None, table=None, service=None, exit_on_error=True):
         self._VMState = VMState.BREAK
@@ -50,6 +1325,8 @@ class ExecutionEngine:
         self._ResultStack = RandomAccessStack(name='Result')
         self._ExecutedScriptHashes = []
         self.ops_processed = 0
+        self.op_batch_counter = 0
+        self.max_batch_count = 2
         self._debug_map = None
         self._is_write_log = settings.log_vm_instructions
         self._is_stackitem_count_strict = True
@@ -70,47 +1347,6 @@ class ExecutionEngine:
 
     def CheckShift(self, shift: int) -> bool:
         return shift <= self.max_shl_shr and shift >= self.min_shl_shr
-
-    def CheckStackSize(self, strict: bool, count: int = 1) -> bool:
-        self._is_stackitem_count_strict &= strict
-        self._stackitem_count += count
-
-        # the C# implementation expects to overflow a signed int into negative when supplying a count of int.MaxValue so we check for exceeding int.MaxValue
-        if self._stackitem_count < 0 or self._stackitem_count > int_MaxValue:
-            self._stackitem_count = int_MaxValue
-
-        if self._stackitem_count <= self.maxStackSize:
-            return True
-
-        if self._is_stackitem_count_strict:
-            return False
-
-        stack_item_list = []
-        for execution_context in self.InvocationStack.Items:  # type: ExecutionContext
-            stack_item_list += execution_context.EvaluationStack.Items + execution_context.AltStack.Items
-
-        self._stackitem_count = self.GetItemCount(stack_item_list)
-        if self._stackitem_count > self.maxStackSize:
-            return False
-
-        self._is_stackitem_count_strict = True
-        return True
-
-    def GetItemCount(self, items_list):  # list of StackItems
-        count = 0
-        items = deque(items_list)
-        while items:
-            stackitem = items.pop()
-            if stackitem.IsTypeMap:
-                items.extend(stackitem.Values)
-                continue
-
-            if stackitem.IsTypeArray:
-                items.extend(stackitem.GetArray())
-                continue
-            count += 1
-
-        return count
 
     def write_log(self, message):
         """
@@ -168,11 +1404,12 @@ class ExecutionEngine:
     def Dispose(self):
         self.InvocationStack.Clear()
 
+    #@profileit
     def Execute(self):
         self._VMState &= ~VMState.BREAK
 
         def loop_stepinto():
-            while self._VMState & VMState.HALT == 0 and self._VMState & VMState.FAULT == 0 and self._VMState & VMState.BREAK == 0:
+            while self._VMState & VMState.HALT == 0 and self._VMState & VMState.FAULT == 0:  # and self._VMState & VMState.BREAK == 0:
                 self.ExecuteNext()
 
         if settings.log_vm_instructions:
@@ -180,1012 +1417,30 @@ class ExecutionEngine:
                 self.write_log(str(datetime.datetime.now()))
                 loop_stepinto()
         else:
-            loop_stepinto()
-
+            try:
+                loop_stepinto()
+            except:
+                pass
         return not self._VMState & VMState.FAULT > 0
 
     def ExecuteInstruction(self):
         context = self.CurrentContext
-        instruction = context.CurrentInstruction
-        opcode = instruction.OpCode
-        estack = context._EvaluationStack
-        istack = self._InvocationStack
-        astack = context._AltStack
+        opcode = context.CurrentInstruction.OpCode
 
-        if opcode >= PUSHBYTES1 and opcode <= PUSHDATA4:
-            if not self.CheckMaxItemSize(len(instruction.Operand)):
+        try:
+            opRet = self.opDict[opcode](self, context, opcode)
+            if self._VMState & VMState.FAULT:
                 return False
-            estack.PushT(instruction.Operand)
-
-            if not self.CheckStackSize(True):
-                return self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
-        else:
-
-            # push values
-            if opcode in [PUSHM1, PUSH1, PUSH2, PUSH3, PUSH4, PUSH5, PUSH6, PUSH7, PUSH8,
-                          PUSH9, PUSH10, PUSH11, PUSH12, PUSH13, PUSH14, PUSH15, PUSH16]:
-
-                topush = int.from_bytes(opcode, 'little') - int.from_bytes(PUSH1, 'little') + 1
-                estack.PushT(topush)
-
-                if not self.CheckStackSize(True):
-                    return self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
-
-            elif opcode == PUSH0:
-                estack.PushT(bytearray(0))
-                if not self.CheckStackSize(True):
-                    return self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
-
-            # control
-            elif opcode == NOP:
-                pass
-            elif opcode in [JMP, JMPIF, JMPIFNOT]:
-                offset = context.InstructionPointer + instruction.TokenI16
-
-                if offset < 0 or offset > context.Script.Length:
-                    return self.VM_FAULT_and_report(VMFault.INVALID_JUMP)
-
-                fValue = True
-                if opcode > JMP:
-                    self.CheckStackSize(False, -1)
-                    fValue = estack.Pop().GetBoolean()
-                    if opcode == JMPIFNOT:
-                        fValue = not fValue
-                if fValue:
-                    context.InstructionPointer = offset
-                else:
-                    context.InstructionPointer += 3
+            if opRet or opRet is None:
+                if self._VMState & VMState.HALT:
+                    return True
+                if opRet:
+                    return True
+                context.MoveNext()
                 return True
+        except KeyError:
+            return self.VM_FAULT_and_report(VMFault.UNKNOWN_OPCODE, opcode)
 
-            elif opcode == CALL:
-                if not self.CheckMaxInvocationStack():
-                    return self.VM_FAULT_and_report(VMFault.CALL_EXCEED_MAX_INVOCATIONSTACK_SIZE)
-
-                context_call = self._LoadScriptInternal(context.Script)
-                context_call.InstructionPointer = context.InstructionPointer + instruction.TokenI16
-                if context_call.InstructionPointer < 0 or context_call.InstructionPointer > context_call.Script.Length:
-                    return False
-                context.EvaluationStack.CopyTo(context_call.EvaluationStack)
-                context.EvaluationStack.Clear()
-
-            elif opcode == RET:
-                context_pop: ExecutionContext = istack.Pop()
-                rvcount = context_pop._RVCount
-
-                if rvcount == -1:
-                    rvcount = context_pop.EvaluationStack.Count
-
-                if rvcount > 0:
-                    if context_pop.EvaluationStack.Count < rvcount:
-                        return self.VM_FAULT_and_report(VMFault.UNKNOWN1)
-
-                    if istack.Count == 0:
-                        stack_eval = self._ResultStack
-                    else:
-                        stack_eval = self.CurrentContext.EvaluationStack
-                    context_pop.EvaluationStack.CopyTo(stack_eval, rvcount)
-
-                if context_pop._RVCount == -1 and istack.Count > 0:
-                    context_pop.AltStack.CopyTo(self.CurrentContext.AltStack)
-
-                self.CheckStackSize(False, 0)
-
-                if istack.Count == 0:
-                    self._VMState = VMState.HALT
-                return True
-
-            elif opcode == APPCALL or opcode == TAILCALL:
-                if self._Table is None:
-                    return self.VM_FAULT_and_report(VMFault.UNKNOWN2)
-
-                if opcode == APPCALL and not self.CheckMaxInvocationStack():
-                    return self.VM_FAULT_and_report(VMFault.APPCALL_EXCEED_MAX_INVOCATIONSTACK_SIZE)
-
-                script_hash = instruction.Operand
-
-                is_normal_call = False
-                for b in script_hash:
-                    if b > 0:
-                        is_normal_call = True
-
-                if not is_normal_call:
-                    script_hash = estack.Pop().GetByteArray()
-
-                context_new = self._LoadScriptByHash(script_hash)
-                if context_new is None:
-                    return self.VM_FAULT_and_report(VMFault.INVALID_CONTRACT, script_hash)
-
-                estack.CopyTo(context_new.EvaluationStack)
-
-                if opcode == TAILCALL:
-                    istack.Remove(1)
-                else:
-                    estack.Clear()
-
-                self.CheckStackSize(False, 0)
-
-            elif opcode == SYSCALL:
-                if len(instruction.Operand) > 252:
-                    return False
-
-                call = instruction.Operand.decode('ascii')
-                self.write_log(call)
-                if not self._Service.Invoke(call, self):
-                    return self.VM_FAULT_and_report(VMFault.SYSCALL_ERROR, instruction.Operand)
-
-                if not self.CheckStackSize(False, int_MaxValue):
-                    return self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
-
-            # stack operations
-            elif opcode == DUPFROMALTSTACK:
-                estack.PushT(astack.Peek())
-
-                if not self.CheckStackSize(True):
-                    return self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
-
-            elif opcode == TOALTSTACK:
-                astack.PushT(estack.Pop())
-
-            elif opcode == FROMALTSTACK:
-                estack.PushT(astack.Pop())
-
-            elif opcode == XDROP:
-                n = estack.Pop().GetBigInteger()
-                if n < 0:
-                    self._VMState = VMState.FAULT
-                    return
-                estack.Remove(n)
-                self.CheckStackSize(False, -2)
-
-            elif opcode == XSWAP:
-                n = estack.Pop().GetBigInteger()
-
-                if n < 0:
-                    return self.VM_FAULT_and_report(VMFault.UNKNOWN3)
-
-                self.CheckStackSize(True, -1)
-
-                # if n == 0 break, same as do x if n > 0
-                if n > 0:
-                    item = estack.Peek(n)
-                    estack.Set(n, estack.Peek())
-                    estack.Set(0, item)
-
-            elif opcode == XTUCK:
-                n = estack.Pop().GetBigInteger()
-
-                if n <= 0:
-                    return self.VM_FAULT_and_report(VMFault.UNKNOWN4)
-
-                estack.Insert(n, estack.Peek())
-
-            elif opcode == DEPTH:
-                estack.PushT(estack.Count)
-                if not self.CheckStackSize(True):
-                    return self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
-
-            elif opcode == DROP:
-                estack.Pop()
-                self.CheckStackSize(False, -1)
-
-            elif opcode == DUP:
-                estack.PushT(estack.Peek())
-                if not self.CheckStackSize(True):
-                    return self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
-
-            elif opcode == NIP:
-                estack.Remove(1)
-                self.CheckStackSize(False, -1)
-
-            elif opcode == OVER:
-                estack.PushT(estack.Peek(1))
-                if not self.CheckStackSize(True):
-                    return self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
-
-            elif opcode == PICK:
-
-                n = estack.Pop().GetBigInteger()
-                if n < 0:
-                    return self.VM_FAULT_and_report(VMFault.UNKNOWN5)
-
-                estack.PushT(estack.Peek(n))
-
-            elif opcode == ROLL:
-
-                n = estack.Pop().GetBigInteger()
-                if n < 0:
-                    return self.VM_FAULT_and_report(VMFault.UNKNOWN6)
-                self.CheckStackSize(True, -1)
-
-                if n > 0:
-                    estack.PushT(estack.Remove(n))
-
-            elif opcode == ROT:
-                estack.PushT(estack.Remove(2))
-
-            elif opcode == SWAP:
-                estack.PushT(estack.Remove(1))
-
-            elif opcode == TUCK:
-                estack.Insert(2, estack.Peek())
-                if not self.CheckStackSize(True):
-                    return self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
-
-            elif opcode == CAT:
-
-                x2 = estack.Pop().GetByteArray()
-                x1 = estack.Pop().GetByteArray()
-                if not self.CheckMaxItemSize(len(x1) + len(x2)):
-                    return self.VM_FAULT_and_report(VMFault.CAT_EXCEED_MAXITEMSIZE)
-                estack.PushT(x1 + x2)
-                self.CheckStackSize(True, -1)
-
-            elif opcode == SUBSTR:
-
-                count = estack.Pop().GetBigInteger()
-                if count < 0:
-                    return self.VM_FAULT_and_report(VMFault.SUBSTR_INVALID_LENGTH)
-
-                index = estack.Pop().GetBigInteger()
-                if index < 0:
-                    return self.VM_FAULT_and_report(VMFault.SUBSTR_INVALID_INDEX)
-
-                x = estack.Pop().GetByteArray()
-
-                estack.PushT(x[index:count + index])
-                self.CheckStackSize(True, -2)
-
-            elif opcode == LEFT:
-
-                count = estack.Pop().GetBigInteger()
-                if count < 0:
-                    return self.VM_FAULT_and_report(VMFault.LEFT_INVALID_COUNT)
-
-                x = estack.Pop().GetByteArray()
-
-                estack.PushT(x[:count])
-                self.CheckStackSize(True, -1)
-
-            elif opcode == RIGHT:
-
-                count = estack.Pop().GetBigInteger()
-                if count < 0:
-                    return self.VM_FAULT_and_report(VMFault.RIGHT_INVALID_COUNT)
-
-                x = estack.Pop().GetByteArray()
-                if count > len(x):
-                    return self.VM_FAULT_and_report(VMFault.RIGHT_UNKNOWN)
-
-                estack.PushT(x[-count:])
-                self.CheckStackSize(True, -1)
-
-            elif opcode == SIZE:
-
-                x = estack.Pop()
-                estack.PushT(x.GetByteLength())
-
-            elif opcode == INVERT:
-
-                x = estack.Pop().GetBigInteger()
-                estack.PushT(~x)
-
-            elif opcode == AND:
-
-                x2 = estack.Pop().GetBigInteger()
-                x1 = estack.Pop().GetBigInteger()
-
-                estack.PushT(x1 & x2)
-                self.CheckStackSize(True, -1)
-
-            elif opcode == OR:
-
-                x2 = estack.Pop().GetBigInteger()
-                x1 = estack.Pop().GetBigInteger()
-
-                estack.PushT(x1 | x2)
-                self.CheckStackSize(True, -1)
-
-            elif opcode == XOR:
-
-                x2 = estack.Pop().GetBigInteger()
-                x1 = estack.Pop().GetBigInteger()
-
-                estack.PushT(x1 ^ x2)
-                self.CheckStackSize(True, -1)
-
-            elif opcode == EQUAL:
-                x2 = estack.Pop()
-                x1 = estack.Pop()
-                estack.PushT(x1.Equals(x2))
-                self.CheckStackSize(False, -1)
-
-            # numeric
-            elif opcode == INC:
-
-                x = estack.Pop().GetBigInteger()
-                if not self.CheckBigInteger(x) or not self.CheckBigInteger(x + 1):
-                    return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
-                estack.PushT(x + 1)
-
-            elif opcode == DEC:
-
-                x = estack.Pop().GetBigInteger()  # type: BigInteger
-                if not self.CheckBigInteger(x) or (x.Sign <= 0 and not self.CheckBigInteger(x - 1)):
-                    return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
-
-                estack.PushT(x - 1)
-
-            elif opcode == SIGN:
-
-                # Make sure to implement sign for big integer
-                x = estack.Pop().GetBigInteger()
-
-                estack.PushT(x.Sign)
-
-            elif opcode == NEGATE:
-
-                x = estack.Pop().GetBigInteger()
-
-                estack.PushT(-x)
-
-            elif opcode == ABS:
-
-                x = estack.Pop().GetBigInteger()
-
-                estack.PushT(abs(x))
-
-            elif opcode == NOT:
-
-                x = estack.Pop().GetBigInteger()
-                estack.PushT(not x)
-                self.CheckStackSize(False, 0)
-
-            elif opcode == NZ:
-
-                x = estack.Pop().GetBigInteger()
-
-                estack.PushT(x is not 0)
-
-            elif opcode == ADD:
-
-                x2 = estack.Pop().GetBigInteger()
-                x1 = estack.Pop().GetBigInteger()
-                if not self.CheckBigInteger(x1) or not self.CheckBigInteger(x2) or not self.CheckBigInteger(x1 + x2):
-                    return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
-
-                estack.PushT(x1 + x2)
-                self.CheckStackSize(True, -1)
-
-            elif opcode == SUB:
-
-                x2 = estack.Pop().GetBigInteger()
-                x1 = estack.Pop().GetBigInteger()
-                if not self.CheckBigInteger(x1) or not self.CheckBigInteger(x2) or not self.CheckBigInteger(x1 - x2):
-                    return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
-
-                estack.PushT(x1 - x2)
-                self.CheckStackSize(True, -1)
-
-            elif opcode == MUL:
-
-                x2 = estack.Pop().GetBigInteger()
-                if not self.CheckBigInteger(x2):
-                    return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
-
-                x1 = estack.Pop().GetBigInteger()  # type: BigInteger
-                if not self.CheckBigInteger(x1):
-                    return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
-
-                result = x1 * x2
-                if not self.CheckBigInteger(result):
-                    return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
-
-                estack.PushT(result)
-                self.CheckStackSize(True, -1)
-
-            elif opcode == DIV:
-
-                x2 = estack.Pop().GetBigInteger()
-                if not self.CheckBigInteger(x2):
-                    return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
-
-                x1 = estack.Pop().GetBigInteger()
-                if not self.CheckBigInteger(x1) or not self.CheckBigInteger(x2):
-                    return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
-
-                estack.PushT(x1 / x2)
-                self.CheckStackSize(True, -1)
-
-            elif opcode == MOD:
-
-                x2 = estack.Pop().GetBigInteger()
-                if not self.CheckBigInteger(x2):
-                    return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
-
-                x1 = estack.Pop().GetBigInteger()
-                if not self.CheckBigInteger(x1):
-                    return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
-
-                estack.PushT(x1 % x2)
-                self.CheckStackSize(True, -1)
-
-            elif opcode == SHL:
-
-                shift = estack.Pop().GetBigInteger()
-                if not self.CheckShift(shift):
-                    return self.VM_FAULT_and_report(VMFault.INVALID_SHIFT)
-
-                x = estack.Pop().GetBigInteger()
-
-                if not self.CheckBigInteger(x):
-                    return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
-
-                x = x << shift
-
-                if not self.CheckBigInteger(x):
-                    return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
-
-                estack.PushT(x)
-                self.CheckStackSize(True, -1)
-
-            elif opcode == SHR:
-
-                shift = estack.Pop().GetBigInteger()
-                if not self.CheckShift(shift):
-                    return self.VM_FAULT_and_report(VMFault.INVALID_SHIFT)
-
-                x = estack.Pop().GetBigInteger()
-
-                if not self.CheckBigInteger(x):
-                    return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
-
-                estack.PushT(x >> shift)
-                self.CheckStackSize(True, -1)
-
-            elif opcode == BOOLAND:
-
-                x2 = estack.Pop().GetBoolean()
-                x1 = estack.Pop().GetBoolean()
-
-                estack.PushT(x1 and x2)
-                self.CheckStackSize(False, -1)
-
-            elif opcode == BOOLOR:
-
-                x2 = estack.Pop().GetBoolean()
-                x1 = estack.Pop().GetBoolean()
-
-                estack.PushT(x1 or x2)
-                self.CheckStackSize(False, -1)
-
-            elif opcode == NUMEQUAL:
-
-                x2 = estack.Pop().GetBigInteger()
-                x1 = estack.Pop().GetBigInteger()
-
-                estack.PushT(x2 == x1)
-                self.CheckStackSize(True, -1)
-
-            elif opcode == NUMNOTEQUAL:
-
-                x2 = estack.Pop().GetBigInteger()
-                x1 = estack.Pop().GetBigInteger()
-
-                estack.PushT(x1 != x2)
-                self.CheckStackSize(True, -1)
-
-            elif opcode == LT:
-
-                x2 = estack.Pop().GetBigInteger()
-                x1 = estack.Pop().GetBigInteger()
-
-                estack.PushT(x1 < x2)
-                self.CheckStackSize(True, -1)
-
-            elif opcode == GT:
-
-                x2 = estack.Pop().GetBigInteger()
-                x1 = estack.Pop().GetBigInteger()
-
-                estack.PushT(x1 > x2)
-                self.CheckStackSize(True, -1)
-
-            elif opcode == LTE:
-
-                x2 = estack.Pop().GetBigInteger()
-                x1 = estack.Pop().GetBigInteger()
-
-                estack.PushT(x1 <= x2)
-                self.CheckStackSize(True, -1)
-
-            elif opcode == GTE:
-
-                x2 = estack.Pop().GetBigInteger()
-                x1 = estack.Pop().GetBigInteger()
-
-                estack.PushT(x1 >= x2)
-                self.CheckStackSize(True, -1)
-
-            elif opcode == MIN:
-
-                x2 = estack.Pop().GetBigInteger()
-                x1 = estack.Pop().GetBigInteger()
-
-                estack.PushT(min(x1, x2))
-                self.CheckStackSize(True, -1)
-
-            elif opcode == MAX:
-
-                x2 = estack.Pop().GetBigInteger()
-                x1 = estack.Pop().GetBigInteger()
-
-                estack.PushT(max(x1, x2))
-                self.CheckStackSize(True, -1)
-
-            elif opcode == WITHIN:
-
-                b = estack.Pop().GetBigInteger()
-                a = estack.Pop().GetBigInteger()
-                x = estack.Pop().GetBigInteger()
-
-                estack.PushT(a <= x and x < b)
-                self.CheckStackSize(True, -2)
-
-            # CRyPTO
-            elif opcode == SHA1:
-                h = hashlib.sha1(estack.Pop().GetByteArray())
-                estack.PushT(h.digest())
-
-            elif opcode == SHA256:
-                h = hashlib.sha256(estack.Pop().GetByteArray())
-                estack.PushT(h.digest())
-
-            elif opcode == HASH160:
-
-                estack.PushT(self.Crypto.Hash160(estack.Pop().GetByteArray()))
-
-            elif opcode == HASH256:
-
-                estack.PushT(self.Crypto.Hash256(estack.Pop().GetByteArray()))
-
-            elif opcode == CHECKSIG:
-
-                pubkey = estack.Pop().GetByteArray()
-                sig = estack.Pop().GetByteArray()
-                container = self.ScriptContainer
-                if not container:
-                    logger.debug("Cannot check signature without container")
-                    estack.PushT(False)
-                    return
-                try:
-                    res = self.Crypto.VerifySignature(container.GetMessage(), sig, pubkey)
-                    estack.PushT(res)
-                except Exception as e:
-                    estack.PushT(False)
-                    logger.debug("Could not checksig: %s " % e)
-                self.CheckStackSize(True, -1)
-
-            elif opcode == VERIFY:
-                pubkey = estack.Pop().GetByteArray()
-                sig = estack.Pop().GetByteArray()
-                message = estack.Pop().GetByteArray()
-                try:
-                    res = self.Crypto.VerifySignature(message, sig, pubkey, unhex=False)
-                    estack.PushT(res)
-                except Exception as e:
-                    estack.PushT(False)
-                    logger.debug("Could not verify: %s " % e)
-                self.CheckStackSize(True, -2)
-
-            elif opcode == CHECKMULTISIG:
-                item = estack.Pop()
-                pubkeys = []
-
-                if isinstance(item, Array):
-
-                    for p in item.GetArray():
-                        pubkeys.append(p.GetByteArray())
-                    n = len(pubkeys)
-                    if n == 0:
-                        return self.VM_FAULT_and_report(VMFault.CHECKMULTISIG_INVALID_PUBLICKEY_COUNT)
-
-                    self.CheckStackSize(False, -1)
-                else:
-                    n = item.GetBigInteger()
-
-                    if n < 1 or n > estack.Count:
-                        return self.VM_FAULT_and_report(VMFault.CHECKMULTISIG_INVALID_PUBLICKEY_COUNT)
-
-                    for i in range(0, n):
-                        pubkeys.append(estack.Pop().GetByteArray())
-                    self.CheckStackSize(True, -n - 1)
-
-                item = estack.Pop()
-                sigs = []
-
-                if isinstance(item, Array):
-                    for s in item.GetArray():
-                        sigs.append(s.GetByteArray())
-                    m = len(sigs)
-
-                    if m == 0 or m > n:
-                        return self.VM_FAULT_and_report(VMFault.CHECKMULTISIG_SIGNATURE_ERROR, m, n)
-                    self.CheckStackSize(False, -1)
-                else:
-                    m = item.GetBigInteger()
-
-                    if m < 1 or m > n or m > estack.Count:
-                        return self.VM_FAULT_and_report(VMFault.CHECKMULTISIG_SIGNATURE_ERROR, m, n)
-
-                    for i in range(0, m):
-                        sigs.append(estack.Pop().GetByteArray())
-                    self.CheckStackSize(True, -m - 1)
-
-                message = self.ScriptContainer.GetMessage() if self.ScriptContainer else ''
-
-                fSuccess = True
-
-                try:
-
-                    i = 0
-                    j = 0
-
-                    while fSuccess and i < m and j < n:
-
-                        if self.Crypto.VerifySignature(message, sigs[i], pubkeys[j]):
-                            i += 1
-                        j += 1
-
-                        if m - i > n - j:
-                            fSuccess = False
-
-                except Exception as e:
-                    fSuccess = False
-
-                estack.PushT(fSuccess)
-
-            # lists
-            elif opcode == ARRAYSIZE:
-
-                item = estack.Pop()
-
-                if not item:
-                    return self.VM_FAULT_and_report(VMFault.UNKNOWN7)
-
-                if isinstance(item, CollectionMixin):
-                    estack.PushT(item.Count)
-                    self.CheckStackSize(False, 0)
-
-                else:
-                    estack.PushT(len(item.GetByteArray()))
-                    self.CheckStackSize(True, 0)
-
-            elif opcode == PACK:
-
-                size = estack.Pop().GetBigInteger()
-
-                if size < 0 or size > estack.Count or not self.CheckArraySize(size):
-                    return self.VM_FAULT_and_report(VMFault.UNKNOWN8)
-
-                items = []
-
-                for i in range(0, size):
-                    topack = estack.Pop()
-                    items.append(topack)
-
-                estack.PushT(items)
-
-            elif opcode == UNPACK:
-                item = estack.Pop()
-
-                if not isinstance(item, Array):
-                    return self.VM_FAULT_and_report(VMFault.UNPACK_INVALID_TYPE, item)
-
-                items = item.GetArray()
-                items.reverse()
-
-                [estack.PushT(i) for i in items]
-
-                estack.PushT(len(items))
-                if not self.CheckStackSize(False, len(items)):
-                    self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
-
-            elif opcode == PICKITEM:
-
-                key = estack.Pop()
-
-                if isinstance(key, CollectionMixin):
-                    # key must be an array index or dictionary key, but not a collection
-                    return self.VM_FAULT_and_report(VMFault.KEY_IS_COLLECTION, key)
-
-                collection = estack.Pop()
-
-                if isinstance(collection, Array):
-                    index = key.GetBigInteger()
-                    if index < 0 or index >= collection.Count:
-                        return self.VM_FAULT_and_report(VMFault.PICKITEM_INVALID_INDEX, index, collection.Count)
-
-                    items = collection.GetArray()
-                    to_pick = items[index]
-                    estack.PushT(to_pick)
-
-                    if not self.CheckStackSize(False, -1):
-                        self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
-
-                elif isinstance(collection, Map):
-                    success, value = collection.TryGetValue(key)
-
-                    if success:
-                        estack.PushT(value)
-
-                        if not self.CheckStackSize(False, -1):
-                            self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
-
-                    else:
-                        return self.VM_FAULT_and_report(VMFault.DICT_KEY_NOT_FOUND, key, collection.Keys)
-                else:
-                    return self.VM_FAULT_and_report(VMFault.PICKITEM_INVALID_TYPE, key, collection)
-
-            elif opcode == SETITEM:
-                value = estack.Pop()
-
-                if isinstance(value, Struct):
-                    value = value.Clone()
-
-                key = estack.Pop()
-
-                if isinstance(key, CollectionMixin):
-                    return self.VM_FAULT_and_report(VMFault.KEY_IS_COLLECTION)
-
-                collection = estack.Pop()
-
-                if isinstance(collection, Array):
-
-                    index = key.GetBigInteger()
-
-                    if index < 0 or index >= collection.Count:
-                        return self.VM_FAULT_and_report(VMFault.SETITEM_INVALID_INDEX)
-
-                    items = collection.GetArray()
-                    items[index] = value
-
-                elif isinstance(collection, Map):
-                    if not collection.ContainsKey(key) and not self.CheckArraySize(collection.Count + 1):
-                        return self.VM_FAULT_and_report(VMFault.SETITEM_INVALID_MAP)
-
-                    collection.SetItem(key, value)
-
-                else:
-                    return self.VM_FAULT_and_report(VMFault.SETITEM_INVALID_TYPE, key, collection)
-
-                if not self.CheckStackSize(False, int_MaxValue):
-                    self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
-
-            elif opcode in [NEWARRAY, NEWSTRUCT]:
-                item = estack.Pop()
-                if isinstance(item, Array):
-                    result = None
-                    if isinstance(item, Struct):
-                        if opcode == NEWSTRUCT:
-                            result = item
-                    else:
-                        if opcode == NEWARRAY:
-                            result = item
-
-                    if result is None:
-                        result = Array(item) if opcode == NEWARRAY else Struct(item)
-
-                    estack.PushT(result)
-
-                else:
-                    count = item.GetBigInteger()
-                    if count < 0:
-                        return self.VM_FAULT_and_report(VMFault.NEWARRAY_NEGATIVE_COUNT)
-
-                    if not self.CheckArraySize(count):
-                        return self.VM_FAULT_and_report(VMFault.NEWARRAY_EXCEED_ARRAYLIMIT)
-
-                    items = [Boolean(False) for i in range(0, count)]
-
-                    result = Array(items) if opcode == NEWARRAY else Struct(items)
-
-                    estack.PushT(result)
-
-                    if not self.CheckStackSize(True, count):
-                        self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
-
-            elif opcode == NEWMAP:
-                estack.PushT(Map())
-                if not self.CheckStackSize(True):
-                    self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
-
-            elif opcode == APPEND:
-                newItem = estack.Pop()
-
-                if isinstance(newItem, Struct):
-                    newItem = newItem.Clone()
-
-                arrItem = estack.Pop()
-
-                if not isinstance(arrItem, Array):
-                    return self.VM_FAULT_and_report(VMFault.APPEND_INVALID_TYPE, arrItem)
-
-                arr = arrItem.GetArray()
-                if not self.CheckArraySize(len(arr) + 1):
-                    return self.VM_FAULT_and_report(VMFault.APPEND_EXCEED_ARRAYLIMIT)
-                arr.append(newItem)
-
-                if not self.CheckStackSize(False, int_MaxValue):
-                    self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
-
-            elif opcode == REVERSE:
-
-                arrItem = estack.Pop()
-                self.CheckStackSize(False, -1)
-
-                if not isinstance(arrItem, Array):
-                    return self.VM_FAULT_and_report(VMFault.REVERSE_INVALID_TYPE, arrItem)
-
-                arrItem.Reverse()
-
-            elif opcode == REMOVE:
-
-                key = estack.Pop()
-
-                if isinstance(key, CollectionMixin):
-                    return self.VM_FAULT_and_report(VMFault.UNKNOWN1)
-
-                collection = estack.Pop()
-                self.CheckStackSize(False, -2)
-
-                if isinstance(collection, Array):
-
-                    index = key.GetBigInteger()
-
-                    if index < 0 or index >= collection.Count:
-                        return self.VM_FAULT_and_report(VMFault.REMOVE_INVALID_INDEX, index, collection.Count)
-
-                    collection.RemoveAt(index)
-
-                elif isinstance(collection, Map):
-
-                    collection.Remove(key)
-
-                else:
-
-                    return self.VM_FAULT_and_report(VMFault.REMOVE_INVALID_TYPE, key, collection)
-
-            elif opcode == HASKEY:
-
-                key = estack.Pop()
-
-                if isinstance(key, CollectionMixin):
-                    return self.VM_FAULT_and_report(VMFault.DICT_KEY_ERROR)
-
-                collection = estack.Pop()
-
-                if isinstance(collection, Array):
-
-                    index = key.GetBigInteger()
-
-                    if index < 0:
-                        return self.VM_FAULT_and_report(VMFault.DICT_KEY_ERROR)
-
-                    estack.PushT(index < collection.Count)
-
-                elif isinstance(collection, Map):
-
-                    estack.PushT(collection.ContainsKey(key))
-
-                else:
-
-                    return self.VM_FAULT_and_report(VMFault.DICT_KEY_ERROR)
-                self.CheckStackSize(False, -1)
-
-            elif opcode == KEYS:
-
-                collection = estack.Pop()
-
-                if isinstance(collection, Map):
-
-                    estack.PushT(Array(collection.Keys))
-                    if not self.CheckStackSize(False, collection.Count):
-                        self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
-                else:
-                    return self.VM_FAULT_and_report(VMFault.DICT_KEY_ERROR)
-
-            elif opcode == VALUES:
-
-                collection = estack.Pop()
-                values = []
-
-                if isinstance(collection, Map):
-                    values = collection.Values
-
-                elif isinstance(collection, Array):
-                    values = collection
-
-                else:
-                    return self.VM_FAULT_and_report(VMFault.DICT_KEY_ERROR)
-
-                newArray = Array()
-                for item in values:
-                    if isinstance(item, Struct):
-                        newArray.Add(item.Clone())
-                    else:
-                        newArray.Add(item)
-
-                estack.PushT(newArray)
-                if not self.CheckStackSize(False, int_MaxValue):
-                    self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
-
-            # stack isolation
-            elif opcode == CALL_I:
-                if not self.CheckMaxInvocationStack():
-                    return self.VM_FAULT_and_report(VMFault.CALL__I_EXCEED_MAX_INVOCATIONSTACK_SIZE)
-                rvcount = instruction.Operand[0]
-                pcount = instruction.Operand[1]
-
-                if estack.Count < pcount:
-                    return self.VM_FAULT_and_report(VMFault.UNKNOWN_STACKISOLATION)
-
-                context_call = self._LoadScriptInternal(context.Script, rvcount)
-                context_call.InstructionPointer = context.InstructionPointer + instruction.TokenI16_1 + 2
-
-                if context_call.InstructionPointer < 0 or context_call.InstructionPointer > context_call.Script.Length:
-                    return False
-
-                estack.CopyTo(context_call.EvaluationStack, pcount)
-
-                for i in range(0, pcount, 1):
-                    estack.Pop()
-
-            elif opcode in [CALL_E, CALL_ED, CALL_ET, CALL_EDT]:
-                if self._Table is None:
-                    return self.VM_FAULT_and_report(VMFault.UNKNOWN_STACKISOLATION2)
-
-                rvcount = instruction.Operand[0]
-                pcount = instruction.Operand[1]
-
-                if estack.Count < pcount:
-                    return self.VM_FAULT_and_report(VMFault.UNKNOWN_STACKISOLATION)
-
-                if opcode in [CALL_ET, CALL_EDT]:
-                    if context._RVCount != rvcount:
-                        return self.VM_FAULT_and_report(VMFault.UNKNOWN_STACKISOLATION3)
-                else:
-                    if not self.CheckMaxInvocationStack():
-                        return self.VM_FAULT_and_report(VMFault.UNKNOWN_EXCEED_MAX_INVOCATIONSTACK_SIZE)
-
-                if opcode in [CALL_ED, CALL_EDT]:
-                    script_hash = estack.Pop().GetByteArray()
-                    self.CheckStackSize(True, -1)
-                else:
-                    script_hash = instruction.ReadBytes(2, 20)
-
-                context_new = self._LoadScriptByHash(script_hash, rvcount)
-                if context_new is None:
-                    return self.VM_FAULT_and_report(VMFault.INVALID_CONTRACT, script_hash)
-
-                estack.CopyTo(context_new.EvaluationStack, pcount)
-
-                if opcode in [CALL_ET, CALL_EDT]:
-                    istack.Remove(1)
-                else:
-                    for i in range(0, pcount, 1):
-                        estack.Pop()
-
-            elif opcode == THROW:
-                return self.VM_FAULT_and_report(VMFault.THROW)
-
-            elif opcode == THROWIFNOT:
-                if not estack.Pop().GetBoolean():
-                    return self.VM_FAULT_and_report(VMFault.THROWIFNOT)
-                self.CheckStackSize(False, -1)
-
-            else:
-                return self.VM_FAULT_and_report(VMFault.UNKNOWN_OPCODE, opcode)
-        context.MoveNext()
         return True
 
     def LoadScript(self, script: bytearray, rvcount: int = -1) -> ExecutionContext:
@@ -1231,24 +1486,43 @@ class ExecutionEngine:
             self.ops_processed += 1
 
             try:
-                instruction = self.CurrentContext.CurrentInstruction
                 if self._is_write_log:
+                    instruction = self.CurrentContext.CurrentInstruction
                     self.write_log("{} {} {}".format(self.ops_processed, instruction.InstructionName, self.CurrentContext.InstructionPointer))
 
                 if not self.PreExecuteInstruction():
                     self._VMState = VMState.FAULT
+                    #self._exit_on_error = False
+                    raise VMException('FAULT')
+                    #return False
+
                 if not self.ExecuteInstruction():
                     self._VMState = VMState.FAULT
+                    #self._exit_on_error = False
+                    raise VMException('FAULT')
+                    #return False
+
                 if not self.PostExecuteInstruction():
                     self._VMState = VMState.FAULT
-            except Exception as e:
+                    #self._exit_on_error = False
+                    raise VMException('FAULT')
+                    #return False
 
+                #if self.op_batch_counter >= self.max_batch_count:
+                #    self.op_batch_counter = 0
+            except InvalidStackSize:
+                self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
+            #except VMException:
+            #    #return False
+            #    raise VMException()
+            except Exception as e:
                 error_msg = f"COULD NOT EXECUTE OP ({self.ops_processed}): {e}"
                 # traceback.print_exc()
                 self.write_log(error_msg)
 
                 if self._exit_on_error:
                     self._VMState = VMState.FAULT
+                    #raise VMException('VM FAULT check error log')
 
     def VM_FAULT_and_report(self, id, *args):
         self._VMState = VMState.FAULT

@@ -29,8 +29,8 @@ class TestApplicationEngine(NeoTestCase):
         self.engine.InvocationStack.PushT(econtext1)
         self.engine.InvocationStack.PushT(econtext2)
 
-        stack_item_list = []
+        stack_item_count = 0
         for execution_context in self.engine.InvocationStack.Items:  # type: ExecutionContext
-            stack_item_list += execution_context.EvaluationStack.Items + execution_context.AltStack.Items
+            stack_item_count += execution_context.EvaluationStack.TotalCount + execution_context.AltStack.TotalCount
 
-        self.assertEqual(7, self.engine.GetItemCount(stack_item_list))
+        self.assertEqual(7, stack_item_count)

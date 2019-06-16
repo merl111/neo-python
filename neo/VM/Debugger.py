@@ -75,7 +75,10 @@ class Debugger:
         if self.engine._VMState & VMState.HALT > 0 or self.engine._VMState & VMState.FAULT > 0:
             logger.debug("stopping because vm state is %s " % self.engine._VMState)
             return
-        self.engine.ExecuteNext()
+        try:
+            self.engine.ExecuteNext()
+        except Exception as e:
+            logger.debug('call failed [%s]' % e)
         if self.engine._VMState == VMState.NONE:
             self.engine._VMState = VMState.BREAK
 
