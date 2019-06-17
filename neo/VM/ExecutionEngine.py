@@ -1,8 +1,10 @@
 import hashlib
 import datetime
+import traceback
 
 import neo.VM.OpCode as opc
-from neo.VM.RandomAccessStack import RandomAccessStack, InvalidStackSize
+from neo.VM.RandomAccessStack import RandomAccessStack
+from neo.VM.SecureRandomAccessStack import InvalidStackSize
 from neo.VM.ExecutionContext import ExecutionContext
 from neo.VM import VMState
 from neo.VM.InteropService import Array, Struct, CollectionMixin, Map, Boolean
@@ -80,13 +82,14 @@ def execCALL(self, context, opcode):
     if context_call.InstructionPointer < 0 or context_call.InstructionPointer > context_call.Script.Length:
         return False
 
-    context.EvaluationStack.CopyTo(context_call.EvaluationStack)
+    context.EvaluationStack.CopyTo(context_call.EvaluationStack, calc_total=False)
     context.EvaluationStack.Clear()
 
     # return self.ExecuteImmediate()
 
 
 def execRET(self, context, opcode):
+    calculate_total = False
     context_pop: ExecutionContext = self._InvocationStack.Pop()
     rvcount = context_pop._RVCount
 
@@ -101,10 +104,10 @@ def execRET(self, context, opcode):
             stack_eval = self._ResultStack
         else:
             stack_eval = self.CurrentContext.EvaluationStack
-        context_pop.EvaluationStack.CopyTo(stack_eval, rvcount)
+        context_pop.EvaluationStack.CopyTo(stack_eval, rvcount, calculate_total)
 
     if context_pop._RVCount == -1 and self._InvocationStack.Count > 0:
-        context_pop.AltStack.CopyTo(self.CurrentContext.AltStack)
+        context_pop.AltStack.CopyTo(self.CurrentContext.AltStack, calc_total=calculate_total)
 
     if self._InvocationStack.Count == 0:
         self._VMState = VMState.HALT
@@ -132,7 +135,11 @@ def execAPPTAILCALL(self, context, opcode):
     if context_new is None:
         return self.VM_FAULT_and_report(VMFault.INVALID_CONTRACT, script_hash)
 
-    context._EvaluationStack.CopyTo(context_new.EvaluationStack)
+    calculate_total = False
+    if opcode == opc.TAILCALL:
+        calculate_total = True
+
+    context._EvaluationStack.CopyTo(context_new.EvaluationStack, calc_total=calculate_total)
 
     if opcode == opc.TAILCALL:
         self._InvocationStack.Remove(1)
@@ -203,7 +210,7 @@ def execXTUCK(self, context, opcode):
     if n <= 0:
         return self.VM_FAULT_and_report(VMFault.UNKNOWN4)
 
-    context._EvaluationStack.Insert(n, context._EvaluationStack.Peek())
+    context._EvaluationStack.Insert(n, context._EvaluationStack.Peek(), False)
 
     # return self.ExecuteImmediate()
 
@@ -254,24 +261,24 @@ def execROLL(self, context, opcode):
         return self.VM_FAULT_and_report(VMFault.UNKNOWN6)
 
     if n > 0:
-        context._EvaluationStack.PushT(context._EvaluationStack.Remove(n))
+        context._EvaluationStack.PushT(context._EvaluationStack.Remove(n, False), False)
 
     # return self.ExecuteImmediate()
 
 
 def execROT(self, context, opcode):
-    context._EvaluationStack.PushT(context._EvaluationStack.Remove(2))
+    context._EvaluationStack.PushT(context._EvaluationStack.Remove(2, False), False)
     # return self.ExecuteImmediate()
 
 
 def execSWAP(self, context, opcode):
-    context._EvaluationStack.PushT(context._EvaluationStack.Remove(1))
+    context._EvaluationStack.PushT(context._EvaluationStack.Remove(1, False), False)
 
     # return self.ExecuteImmediate()
 
 
 def execTUCK(self, context, opcode):
-    context._EvaluationStack.Insert(2, context._EvaluationStack.Peek())
+    context._EvaluationStack.Insert(2, context._EvaluationStack.Peek(), False)
 
     # return self.ExecuteImmediate()
 
@@ -338,8 +345,8 @@ def execSIZE(self, context, opcode):
 
 
 def execINVERT(self, context, opcode):
-    x = context._EvaluationStack.Pop().GetBigInteger()
-    context._EvaluationStack.PushT(~x)
+    x = context._EvaluationStack.Pop(False).GetBigInteger()
+    context._EvaluationStack.PushT(~x, False)
 
     # return self.ExecuteImmediate()
 
@@ -377,58 +384,58 @@ def execEQUAL(self, context, opcode):
 
 
 def execINC(self, context, opcode):
-    x = context._EvaluationStack.Pop().GetBigInteger()
+    x = context._EvaluationStack.Pop(False).GetBigInteger()
 
     if not self.CheckBigInteger(x) or not self.CheckBigInteger(x + 1):
         return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
 
-    context._EvaluationStack.PushT(x + 1)
+    context._EvaluationStack.PushT(x + 1, False)
 
     # return self.ExecuteImmediate()
 
 
 def execDEC(self, context, opcode):
-    x = context._EvaluationStack.Pop().GetBigInteger()
+    x = context._EvaluationStack.Pop(False).GetBigInteger()
 
     if not self.CheckBigInteger(x) or not self.CheckBigInteger(x + 1):
         return self.VM_FAULT_and_report(VMFault.BIGINTEGER_EXCEED_LIMIT)
 
-    context._EvaluationStack.PushT(x - 1)
+    context._EvaluationStack.PushT(x - 1, False)
 
     # return self.ExecuteImmediate()
 
 
 def execSIGN(self, context, opcode):
-    x = context._EvaluationStack.Pop().GetBigInteger()
-    context._EvaluationStack.PushT(x.Sign)
+    x = context._EvaluationStack.Pop(False).GetBigInteger()
+    context._EvaluationStack.PushT(x.Sign, False)
 
     # return self.ExecuteImmediate()
 
 
 def execNEGATE(self, context, opcode):
-    x = context._EvaluationStack.Pop().GetBigInteger()
-    context._EvaluationStack.PushT(-x)
+    x = context._EvaluationStack.Pop(False).GetBigInteger()
+    context._EvaluationStack.PushT(-x, False)
 
     # return self.ExecuteImmediate()
 
 
 def execABS(self, context, opcode):
-    x = context._EvaluationStack.Pop().GetBigInteger()
-    context._EvaluationStack.PushT(abs(x))
+    x = context._EvaluationStack.Pop(False).GetBigInteger()
+    context._EvaluationStack.PushT(abs(x), False)
 
     # return self.ExecuteImmediate()
 
 
 def execNOT(self, context, opcode):
-    x = context._EvaluationStack.Pop().GetBigInteger()
-    context._EvaluationStack.PushT(not x)
+    x = context._EvaluationStack.Pop(False).GetBigInteger()
+    context._EvaluationStack.PushT(not x, False)
 
     # return self.ExecuteImmediate()
 
 
 def execNZ(self, context, opcode):
-    x = context._EvaluationStack.Pop().GetBigInteger()
-    context._EvaluationStack.PushT(x is not 0)
+    x = context._EvaluationStack.Pop(False).GetBigInteger()
+    context._EvaluationStack.PushT(x is not 0, False)
 
     # return self.ExecuteImmediate()
 
@@ -639,27 +646,27 @@ def execWITHIN(self, context, opcode):
 
 
 def execSHA1(self, context, opcode):
-    h = hashlib.sha1(context._EvaluationStack.Pop().GetByteArray())
-    context._EvaluationStack.PushT(h.digest())
+    h = hashlib.sha1(context._EvaluationStack.Pop(False).GetByteArray())
+    context._EvaluationStack.PushT(h.digest(), False)
 
     # return self.ExecuteImmediate()
 
 
 def execSHA256(self, context, opcode):
-    h = hashlib.sha256(context._EvaluationStack.Pop().GetByteArray())
-    context._EvaluationStack.PushT(h.digest())
+    h = hashlib.sha256(context._EvaluationStack.Pop(False).GetByteArray())
+    context._EvaluationStack.PushT(h.digest(), False)
 
     # return self.ExecuteImmediate()
 
 
 def execHASH160(self, context, opcode):
-    context._EvaluationStack.PushT(self.Crypto.Hash160(context._EvaluationStack.Pop().GetByteArray()))
+    context._EvaluationStack.PushT(self.Crypto.Hash160(context._EvaluationStack.Pop(False).GetByteArray()), False)
 
     # return self.ExecuteImmediate()
 
 
 def execHASH256(self, context, opcode):
-    context._EvaluationStack.PushT(self.Crypto.Hash256(context._EvaluationStack.Pop().GetByteArray()))
+    context._EvaluationStack.PushT(self.Crypto.Hash256(context._EvaluationStack.Pop(False).GetByteArray()), False)
 
     # return self.ExecuteImmediate()
 
@@ -937,7 +944,7 @@ def execAPPEND(self, context, opcode):
 
 
 def execREVERSE(self, context, opcode):
-    arrItem = context._EvaluationStack.Pop()
+    arrItem = context._EvaluationStack.Pop(False)
 
     if not isinstance(arrItem, Array):
         return self.VM_FAULT_and_report(VMFault.REVERSE_INVALID_TYPE, arrItem)
@@ -1117,6 +1124,7 @@ class ExecutionEngine:
     # file descriptor
     log_file = None
     _vm_debugger = None
+    _finished = False
 
     MaxSizeForBigInteger = 32
     max_shl_shr = 256
@@ -1409,7 +1417,7 @@ class ExecutionEngine:
         self._VMState &= ~VMState.BREAK
 
         def loop_stepinto():
-            while self._VMState & VMState.HALT == 0 and self._VMState & VMState.FAULT == 0:  # and self._VMState & VMState.BREAK == 0:
+            while not self._finished:
                 self.ExecuteNext()
 
         if settings.log_vm_instructions:
@@ -1417,10 +1425,8 @@ class ExecutionEngine:
                 self.write_log(str(datetime.datetime.now()))
                 loop_stepinto()
         else:
-            try:
-                loop_stepinto()
-            except:
-                pass
+            loop_stepinto()
+
         return not self._VMState & VMState.FAULT > 0
 
     def ExecuteInstruction(self):
@@ -1430,10 +1436,12 @@ class ExecutionEngine:
         try:
             opRet = self.opDict[opcode](self, context, opcode)
             if self._VMState & VMState.FAULT:
-                return False
+                self._finished = True
+            if self._VMState & VMState.BREAK:
+                self._finished = True
             if opRet or opRet is None:
                 if self._VMState & VMState.HALT:
-                    return True
+                    self._finished = True
                 if opRet:
                     return True
                 context.MoveNext()
@@ -1492,32 +1500,21 @@ class ExecutionEngine:
 
                 if not self.PreExecuteInstruction():
                     self._VMState = VMState.FAULT
-                    #self._exit_on_error = False
-                    raise VMException('FAULT')
-                    #return False
+                    self._finished = True
 
                 if not self.ExecuteInstruction():
                     self._VMState = VMState.FAULT
-                    #self._exit_on_error = False
-                    raise VMException('FAULT')
-                    #return False
+                    self._finished = True
 
                 if not self.PostExecuteInstruction():
                     self._VMState = VMState.FAULT
-                    #self._exit_on_error = False
-                    raise VMException('FAULT')
-                    #return False
+                    self._finished = True
 
-                #if self.op_batch_counter >= self.max_batch_count:
-                #    self.op_batch_counter = 0
             except InvalidStackSize:
                 self.VM_FAULT_and_report(VMFault.INVALID_STACKSIZE)
-            #except VMException:
-            #    #return False
-            #    raise VMException()
             except Exception as e:
                 error_msg = f"COULD NOT EXECUTE OP ({self.ops_processed}): {e}"
-                # traceback.print_exc()
+                #traceback.print_exc()
                 self.write_log(error_msg)
 
                 if self._exit_on_error:

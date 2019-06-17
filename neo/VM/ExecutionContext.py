@@ -1,6 +1,6 @@
 from neo.IO.MemoryStream import StreamManager
 from neo.Core.IO.BinaryReader import BinaryReader
-from neo.VM.RandomAccessStack import RandomAccessStack
+from neo.VM.SecureRandomAccessStack import SecureRandomAccessStack
 from neo.VM.OpCode import RET
 from neo.VM.Instruction import Instruction
 from typing import TYPE_CHECKING
@@ -13,12 +13,20 @@ class ExecutionContext:
 
     def __init__(self, script: 'Script', rvcount: int):
         self.instructions = {}
-        self._EvaluationStack = RandomAccessStack(name='Evaluation')
-        self._AltStack = RandomAccessStack(name='Alt')
+        self._EvaluationStack = SecureRandomAccessStack(name='Evaluation')
+        self._AltStack = SecureRandomAccessStack(name='Alt')
         self.InstructionPointer = 0
         self.Script = script
         self._RVCount = rvcount
         self._script_hash = None
+
+    @property
+    def IsTypeMap(self):
+        return False
+
+    @property
+    def IsTypeArray(self):
+        return False
 
     @property
     def EvaluationStack(self):
