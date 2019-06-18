@@ -1,14 +1,13 @@
 from neo.VM.InteropService import Array, Map, Struct
 from neo.VM.RandomAccessStack import RandomAccessStack
+from neo.VM.InteropService import StackItem
 
 
 def getItemCount(item):
-    if not hasattr(item, '__iter__') and item.IsTypeArray:
-        return sum(getItemCount(subitem) for subitem in item.GetArray())
-    if not hasattr(item, '__iter__') and item.IsTypeMap:
+    # type seems to be quiet fast, and we save one full check
+    if type(item) in (Map, Array):
         return sum(getItemCount(subitem) for subitem in item.Values)
-    # if type(item) == list:
-    if hasattr(item, '__iter__'):
+    if type(item) == Array:
         return sum(getItemCount(subitem) for subitem in item)
     else:
         return 1
@@ -38,7 +37,7 @@ class SecureRandomAccessStack(RandomAccessStack):
             stack._size += self._size
 
             if calc_total:
-                from neo.VM.InteropService import StackItem
+                #from neo.VM.InteropService import StackItem
                 stack._total_size += self._getItemCount(StackItem.New(self._list))
                 if stack._total_size > self._max_size:
                     raise InvalidStackSize
@@ -85,11 +84,16 @@ class SecureRandomAccessStack(RandomAccessStack):
         return self._list[self._size - index - 1]
 
     def Pop(self, calc_total=True):
-        return self.Remove(0, calc_total)
+        # duplicate code but it's faster (67% with, 78% without for 2 calls)
+        item = self._list.pop(-1)
+        self._size -= 1
+        if calc_total:
+            self._total_size -= self._getItemCount(item)
+        return item
 
     def PushT(self, item, calc_total=True):
         # to prevent circular import
-        from neo.VM.InteropService import StackItem
+        #from neo.VM.InteropService import StackItem
         if not type(item) is StackItem and not issubclass(type(item), StackItem):
             item = StackItem.New(item)
 
@@ -127,7 +131,7 @@ class SecureRandomAccessStack(RandomAccessStack):
         return item
 
     def Set(self, index, item, calc_total=True):
-        from neo.VM.InteropService import StackItem
+        #from neo.VM.InteropService import StackItem
         index = int(index)
 
         if index >= self._size:

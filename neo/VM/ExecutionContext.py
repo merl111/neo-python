@@ -19,6 +19,7 @@ class ExecutionContext:
         self.Script = script
         self._RVCount = rvcount
         self._script_hash = None
+        self.ins = None
 
     @property
     def IsTypeMap(self):
@@ -38,7 +39,10 @@ class ExecutionContext:
 
     @property
     def CurrentInstruction(self):
-        return self.GetInstruction(self.InstructionPointer)
+        if self.ins is None:
+            return self.GetInstruction(self.InstructionPointer)
+        else:
+            return self.ins
 
     @property
     def NextInstruction(self):
@@ -47,19 +51,20 @@ class ExecutionContext:
     def ScriptHash(self):
         return self.Script.ScriptHash
 
-    def GetInstruction(self, ip) -> Instruction:
+    def GetInstruction(self, ip: int) -> Instruction:
         if ip >= self.Script.Length:
             return Instruction.RET()
         instruction = self.instructions.get(ip, None)
 
         if instruction is None:
             instruction = Instruction.FromScriptAndIP(self.Script, ip)
-            self.instructions.update({ip: instruction})
+            self.instructions[ip] = instruction
 
         return instruction
 
     def MoveNext(self):
         self.InstructionPointer += self.CurrentInstruction.Size
+        self.ins = self.GetInstruction(self.InstructionPointer)
         return self.InstructionPointer < self.Script.Length
 
     def Dispose(self):

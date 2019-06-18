@@ -25,10 +25,6 @@ logger = log_manager.getLogger('vm')
 int_MaxValue = 2147483647
 
 
-class VMException(Exception):
-    pass
-
-
 def execPUSH0(self, context, opcode):
     context._EvaluationStack.PushT(bytearray(0))
 
@@ -67,8 +63,10 @@ def execJMPALL(self, context, opcode):
             fValue = not fValue
     if fValue:
         context.InstructionPointer = offset
+        context.ins = context.GetInstruction(context.InstructionPointer)
     else:
         context.InstructionPointer += 3
+        context.ins = context.GetInstruction(context.InstructionPointer)
     return True
 
 
@@ -852,7 +850,7 @@ def execPICKITEM(self, context, opcode):
 def execSETITEM(self, context, opcode):
     value = context._EvaluationStack.Pop()
 
-    if isinstance(value, Struct):
+    if type(value) == Struct:
         value = value.Clone()
 
     key = context._EvaluationStack.Pop()
@@ -927,7 +925,7 @@ def execNEWMAP(self, context, opcode):
 def execAPPEND(self, context, opcode):
     newItem = context._EvaluationStack.Pop()
 
-    if isinstance(newItem, Struct):
+    if type(newItem) == Struct:
         newItem = newItem.Clone()
 
     arrItem = context._EvaluationStack.Pop()
@@ -1013,7 +1011,7 @@ def execHASKEY(self, context, opcode):
 def execKEYS(self, context, opcode):
     collection = context._EvaluationStack.Pop()
 
-    if isinstance(collection, Map):
+    if type(collection) == Map:
 
         context._EvaluationStack.PushT(Array(collection.Keys))
     else:
@@ -1037,7 +1035,7 @@ def execVALUES(self, context, opcode):
 
     newArray = Array()
     for item in values:
-        if isinstance(item, Struct):
+        if type(item) == Struct:
             newArray.Add(item.Clone())
         else:
             newArray.Add(item)
@@ -1412,7 +1410,6 @@ class ExecutionEngine:
     def Dispose(self):
         self.InvocationStack.Clear()
 
-    #@profileit
     def Execute(self):
         self._VMState &= ~VMState.BREAK
 
@@ -1519,7 +1516,6 @@ class ExecutionEngine:
 
                 if self._exit_on_error:
                     self._VMState = VMState.FAULT
-                    #raise VMException('VM FAULT check error log')
 
     def VM_FAULT_and_report(self, id, *args):
         self._VMState = VMState.FAULT

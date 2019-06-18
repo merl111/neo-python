@@ -351,7 +351,15 @@ def test_invoke(script, wallet, outputs, withdrawal_tx=None,
     engine.LoadScript(wallet_tx.Script)
 
     try:
+        import cProfile
+        from pstats import Stats
+        pr = cProfile.Profile()
+        pr.enable()
         success = engine.Execute()
+        pr.disable()
+        s = Stats(pr)
+        s.dump_stats('/home/enzensbe/Exec.pstats')
+
 
         service.ExecutionCompleted(engine, success)
 

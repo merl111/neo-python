@@ -162,6 +162,11 @@ class Array(StackItem, CollectionMixin):
     def Count(self):
         return len(self._array)
 
+    @property
+    def Values(self):
+        # same as for map, to save one check when counting on the stack
+        return self._array
+
     def __init__(self, value=None):
         if value:
             if isinstance(value, (Array, Struct)):
